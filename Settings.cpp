@@ -2,7 +2,9 @@
 
 #include "lib/SimpleIni/SimpleIni.h"
 
+#include <cstdio>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <windows.h>
@@ -33,6 +35,43 @@ std::wstring Utf8ToWide(const char* value)
     std::wstring result(static_cast<size_t>(size - 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, value, -1, result.data(), size);
     return result;
+}
+
+std::string ColorToString(COLORREF color)
+{
+    char buffer[8]{};
+    sprintf_s(buffer, "%02X%02X%02X", GetRValue(color), GetGValue(color), GetBValue(color));
+    return buffer;
+}
+
+bool TryParseColor(const char* value, COLORREF& color)
+{
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    std::string text = value;
+    if (text.starts_with("#"))
+    {
+        text.erase(text.begin());
+    }
+
+    if (text.size() != 6)
+    {
+        return false;
+    }
+
+    unsigned int rgb = 0;
+    std::istringstream stream(text);
+    stream >> std::hex >> rgb;
+    if (stream.fail())
+    {
+        return false;
+    }
+
+    color = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    return true;
 }
 }
 
@@ -65,6 +104,18 @@ void Settings::Load()
     }
 
     runAtSystemStartup_ = ini.GetBoolValue("General", "RunAtSystemStartup", false);
+
+    COLORREF color = annotationColor_;
+    if (TryParseColor(ini.GetValue("Annotation", "Color", ""), color))
+    {
+        annotationColor_ = color;
+    }
+
+    const std::wstring lastSaveDirectory = Utf8ToWide(ini.GetValue("Save", "LastDirectory", ""));
+    if (!lastSaveDirectory.empty())
+    {
+        lastSaveDirectory_ = lastSaveDirectory;
+    }
 }
 
 void Settings::Save() const
@@ -73,6 +124,8 @@ void Settings::Save() const
     ini.SetUnicode();
     ini.SetBoolValue("General", "RunAtSystemStartup", runAtSystemStartup_);
     ini.SetValue("Hotkeys", "Screenshot", WideToUtf8(screenshotHotkey_).c_str());
+    ini.SetValue("Annotation", "Color", ColorToString(annotationColor_).c_str());
+    ini.SetValue("Save", "LastDirectory", WideToUtf8(lastSaveDirectory_.wstring()).c_str());
     ini.SaveFile(settingsFilePath_.string().c_str());
 }
 
@@ -94,4 +147,24 @@ bool Settings::RunAtSystemStartup() const
 void Settings::SetRunAtSystemStartup(bool enabled)
 {
     runAtSystemStartup_ = enabled;
+}
+
+COLORREF Settings::AnnotationColor() const
+{
+    return annotationColor_;
+}
+
+void Settings::SetAnnotationColor(COLORREF color)
+{
+    annotationColor_ = color;
+}
+
+const std::filesystem::path& Settings::LastSaveDirectory() const
+{
+    return lastSaveDirectory_;
+}
+
+void Settings::SetLastSaveDirectory(std::filesystem::path directory)
+{
+    lastSaveDirectory_ = std::move(directory);
 }

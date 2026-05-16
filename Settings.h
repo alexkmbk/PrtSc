@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <windows.h>
 
 class Settings
 {
@@ -17,6 +18,12 @@ public:
     bool RunAtSystemStartup() const;
     void SetRunAtSystemStartup(bool enabled);
 
+    COLORREF AnnotationColor() const;
+    void SetAnnotationColor(COLORREF color);
+
+    const std::filesystem::path& LastSaveDirectory() const;
+    void SetLastSaveDirectory(std::filesystem::path directory);
+
 private:
     Settings() = default;
 
@@ -24,4 +31,6 @@ private:
 
     std::wstring screenshotHotkey_ = L"Ctrl+PrtScr";
     bool runAtSystemStartup_ = false;
+    COLORREF annotationColor_ = RGB(255, 0, 0);
+    std::filesystem::path lastSaveDirectory_;
 };

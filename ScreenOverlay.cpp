@@ -1,6 +1,8 @@
 #include "ScreenOverlay.h"
 
+#include "ArrowAnnotation.h"
 #include "CaptureToolbar.h"
+#include "Settings.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,6 +13,7 @@
 #include <commdlg.h>
 #include <objidl.h>
 #include <gdiplus.h>
+#include <shlobj.h>
 #include <windowsx.h>
 
 namespace
@@ -28,6 +31,7 @@ enum class SelectionMode
     None,
     Create,
     Move,
+    Arrow,
 };
 
 struct OverlayState
@@ -37,8 +41,11 @@ struct OverlayState
     POINT moveOffset{};
     RECT selection{};
     RECT previousSelection{};
+    ArrowAnnotation arrowAnnotation{};
     CaptureToolbar toolbar{};
+    COLORREF annotationColor = RGB(255, 0, 0);
     SelectionMode mode = SelectionMode::None;
+    bool isArrowToolActive = false;
     bool hasSelection = false;
     bool isMouseDown = false;
     bool isDragging = false;
@@ -70,6 +77,11 @@ bool IsRectVisible(const RECT& rect)
 bool IsPointInsideRect(POINT point, const RECT& rect)
 {
     return point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom;
+}
+
+bool IsCtrlPressed()
+{
+    return (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 }
 
 LONG ClampLong(LONG value, LONG low, LONG high)
@@ -209,7 +221,21 @@ void ShowToolbarForSelection(HWND hwnd, OverlayState& state)
 {
     POINT anchorPoint{state.selection.right, state.selection.bottom};
     ClientToScreen(hwnd, &anchorPoint);
-    state.toolbar.Show(hwnd, anchorPoint);
+    state.toolbar.Show(hwnd, anchorPoint, state.annotationColor);
+}
+
+POINT ClientPointToScreen(HWND hwnd, POINT point)
+{
+    ClientToScreen(hwnd, &point);
+    return point;
+}
+
+POINT ClampPointToRect(POINT point, const RECT& rect)
+{
+    return {
+        ClampLong(point.x, rect.left, rect.right),
+        ClampLong(point.y, rect.top, rect.bottom),
+    };
 }
 
 RECT SelectionToScreenRect(HWND hwnd, const RECT& selection)
@@ -351,7 +377,7 @@ std::filesystem::path MakeUniquePngPath(std::filesystem::path path)
     }
 }
 
-std::filesystem::path GetDefaultScreenshotPath()
+std::wstring GetDefaultScreenshotFilename()
 {
     SYSTEMTIME localTime{};
     GetLocalTime(&localTime);
@@ -366,14 +392,38 @@ std::filesystem::path GetDefaultScreenshotPath()
         localTime.wHour,
         localTime.wMinute);
 
-    return MakeUniquePngPath(std::filesystem::current_path() / filename);
+    return filename;
+}
+
+std::filesystem::path GetInitialSaveDirectory()
+{
+    const std::filesystem::path& savedDirectory = Settings::Instance().LastSaveDirectory();
+    if (!savedDirectory.empty() && std::filesystem::exists(savedDirectory))
+    {
+        return savedDirectory;
+    }
+
+    PWSTR picturesPath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Pictures, KF_FLAG_DEFAULT, nullptr, &picturesPath)) && picturesPath != nullptr)
+    {
+        std::filesystem::path result = picturesPath;
+        CoTaskMemFree(picturesPath);
+        if (std::filesystem::exists(result))
+        {
+            return result;
+        }
+    }
+
+    return std::filesystem::current_path();
 }
 
 bool ShowSavePngDialog(std::filesystem::path& selectedPath)
 {
-    std::filesystem::path defaultPath = GetDefaultScreenshotPath();
+    const std::filesystem::path initialDirectory = GetInitialSaveDirectory();
+    std::filesystem::path defaultPath = MakeUniquePngPath(initialDirectory / GetDefaultScreenshotFilename());
     wchar_t filePath[MAX_PATH]{};
     wcscpy_s(filePath, defaultPath.wstring().c_str());
+    const std::wstring initialDirectoryText = initialDirectory.wstring();
 
     OPENFILENAMEW openFileName{};
     openFileName.lStructSize = sizeof(openFileName);
@@ -381,15 +431,36 @@ bool ShowSavePngDialog(std::filesystem::path& selectedPath)
     openFileName.lpstrFilter = L"PNG image (*.png)\0*.png\0All files (*.*)\0*.*\0";
     openFileName.lpstrFile = filePath;
     openFileName.nMaxFile = static_cast<DWORD>(sizeof(filePath) / sizeof(filePath[0]));
+    openFileName.lpstrInitialDir = initialDirectoryText.c_str();
     openFileName.lpstrDefExt = L"png";
-    openFileName.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST;
+    openFileName.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
     if (GetSaveFileNameW(&openFileName) == FALSE)
     {
         return false;
     }
 
-    selectedPath = MakeUniquePngPath(filePath);
+    selectedPath = filePath;
+    if (selectedPath.extension().empty())
+    {
+        selectedPath.replace_extension(L".png");
+    }
+
+    if (std::filesystem::exists(selectedPath))
+    {
+        const int answer = MessageBoxW(
+            nullptr,
+            L"The selected file already exists. Do you want to replace it?",
+            L"PrtSc",
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+        if (answer != IDYES)
+        {
+            return false;
+        }
+    }
+
+    Settings::Instance().SetLastSaveDirectory(selectedPath.parent_path());
+    Settings::Instance().Save();
     return true;
 }
 
@@ -428,6 +499,7 @@ void CopySelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
     Sleep(80);
 
     CopyScreenRectToClipboard(hwnd, screenRect);
+    state.arrowAnnotation.Hide();
     DestroyWindow(hwnd);
 }
 
@@ -444,6 +516,7 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     Sleep(80);
 
     HBITMAP bitmap = CaptureScreenRect(screenRect);
+    state.arrowAnnotation.Hide();
     if (bitmap != nullptr)
     {
         std::filesystem::path selectedPath;
@@ -456,6 +529,26 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     }
 
     DestroyWindow(hwnd);
+}
+
+void ShowColorPicker(HWND hwnd, OverlayState& state)
+{
+    static COLORREF customColors[16]{};
+
+    CHOOSECOLORW chooseColor{};
+    chooseColor.lStructSize = sizeof(chooseColor);
+    chooseColor.hwndOwner = hwnd;
+    chooseColor.rgbResult = state.annotationColor;
+    chooseColor.lpCustColors = customColors;
+    chooseColor.Flags = CC_FULLOPEN | CC_RGBINIT;
+
+    if (ChooseColorW(&chooseColor) != FALSE)
+    {
+        state.annotationColor = chooseColor.rgbResult;
+        state.toolbar.SetColor(state.annotationColor);
+        Settings::Instance().SetAnnotationColor(state.annotationColor);
+        Settings::Instance().Save();
+    }
 }
 
 LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
@@ -478,6 +571,23 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         }
         return 0;
 
+    case kCaptureToolbarColorMessage:
+        if (state != nullptr)
+        {
+            ShowColorPicker(hwnd, *state);
+        }
+        return 0;
+
+    case kCaptureToolbarArrowMessage:
+        if (state != nullptr && state->hasSelection)
+        {
+            state->toolbar.Hide();
+            state->isArrowToolActive = true;
+            state->mode = SelectionMode::None;
+            SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        }
+        return 0;
+
     case kCaptureToolbarCancelMessage:
         DestroyWindow(hwnd);
         return 0;
@@ -492,6 +602,19 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        if (state != nullptr && IsCtrlPressed())
+        {
+            if (wparam == 'C')
+            {
+                CopySelectionToClipboardAndClose(hwnd, *state);
+                return 0;
+            }
+            if (wparam == 'S')
+            {
+                SaveSelectionToFileAndClose(hwnd, *state);
+                return 0;
+            }
+        }
         if (wparam == VK_ESCAPE)
         {
             DestroyWindow(hwnd);
@@ -512,7 +635,22 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->previousSelection = state->selection;
             state->toolbar.Hide();
 
-            if (state->hasSelection && IsPointInsideRect(point, state->selection))
+            if (state->isArrowToolActive && state->hasSelection)
+            {
+                if (IsPointInsideRect(point, state->selection))
+                {
+                    state->mode = SelectionMode::Arrow;
+                    state->arrowAnnotation.Hide();
+                }
+                else
+                {
+                    state->isMouseDown = false;
+                    state->isDragging = false;
+                    state->mode = SelectionMode::None;
+                    return 0;
+                }
+            }
+            else if (state->hasSelection && IsPointInsideRect(point, state->selection))
             {
                 state->mode = SelectionMode::Move;
                 state->moveOffset = {
@@ -531,7 +669,20 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (state != nullptr && state->isMouseDown && (wparam & MK_LBUTTON) != 0)
         {
             const POINT current = GetClientPoint(lparam);
-            if (state->mode == SelectionMode::Move && state->hasSelection)
+            if (state->mode == SelectionMode::Arrow && state->hasSelection)
+            {
+                POINT arrowEnd = ClampPointToRect(current, state->selection);
+                if (arrowEnd.x != state->dragStart.x || arrowEnd.y != state->dragStart.y)
+                {
+                    state->isDragging = true;
+                    state->arrowAnnotation.Show(
+                        hwnd,
+                        ClientPointToScreen(hwnd, state->dragStart),
+                        ClientPointToScreen(hwnd, arrowEnd),
+                        state->annotationColor);
+                }
+            }
+            else if (state->mode == SelectionMode::Move && state->hasSelection)
             {
                 state->isDragging = true;
                 state->selection = MoveRectToPoint(state->previousSelection, current, state->moveOffset, state->size);
@@ -583,6 +734,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
             state->isMouseDown = false;
             state->isDragging = false;
+            state->isArrowToolActive = false;
             state->mode = SelectionMode::None;
         }
         return 0;
@@ -614,6 +766,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_DESTROY:
     {
+        state->arrowAnnotation.Hide();
         delete state;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         return 0;
@@ -665,6 +818,7 @@ bool ScreenOverlay::Show(HINSTANCE instance)
 
     auto state = std::make_unique<OverlayState>();
     state->size = {width, height};
+    state->annotationColor = Settings::Instance().AnnotationColor();
 
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,

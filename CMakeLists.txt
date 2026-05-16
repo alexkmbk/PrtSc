@@ -7,6 +7,8 @@ project(PrtSc
 
 add_executable(PrtSc WIN32
     AppMessages.h
+    ArrowAnnotation.cpp
+    ArrowAnnotation.h
     CaptureToolbar.cpp
     CaptureToolbar.h
     HotkeyManager.cpp
@@ -31,6 +33,7 @@ target_compile_features(PrtSc PRIVATE cxx_std_23)
 target_link_libraries(PrtSc PRIVATE
     Advapi32
     Comdlg32
+    Comctl32
     Gdiplus
     Shell32
 )
