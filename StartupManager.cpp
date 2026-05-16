@@ -7,7 +7,6 @@ namespace
 {
 constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 constexpr wchar_t kRunValueName[] = L"PrtSc";
-constexpr wchar_t kLegacyRunValueName[] = L"PrtScr";
 
 std::wstring GetCurrentExecutableCommand()
 {
@@ -70,7 +69,6 @@ bool SetRunAtSystemStartup(bool enabled)
             REG_SZ,
             reinterpret_cast<const BYTE*>(command.c_str()),
             static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
-        RegDeleteValueW(runKey, kLegacyRunValueName);
     }
     else
     {
@@ -79,7 +77,6 @@ bool SetRunAtSystemStartup(bool enabled)
         {
             status = ERROR_SUCCESS;
         }
-        RegDeleteValueW(runKey, kLegacyRunValueName);
     }
 
     RegCloseKey(runKey);
