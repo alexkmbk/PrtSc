@@ -1,0 +1,10 @@
+build/
+out/
+assets/icon-concepts/
+
+.vs/
+*.user
+*.suo
+*.vcxproj.user
+
+CMakeUserPresets.json

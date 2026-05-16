@@ -1,0 +1,8 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <text x="-10" y="122" fill="#5E6871" font-family="Verdana, Segoe UI, Arial, sans-serif" font-size="135" font-weight="400">Prt</text>
+  <g>
+    <rect x="58" y="108" width="192" height="142" rx="31" fill="#6F7880"/>
+    <rect x="58" y="108" width="192" height="142" rx="31" stroke="#FFFFFF" stroke-width="5"/>
+    <text x="79" y="213" fill="#FFFFFF" font-family="Segoe UI, Arial, sans-serif" font-size="116" font-weight="900" stroke="#FFFFFF" stroke-width="2" paint-order="stroke fill">Sc</text>
+  </g>
+</svg>

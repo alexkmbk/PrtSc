@@ -1,0 +1,5 @@
+#include <windows.h>
+
+#include "resource.h"
+
+IDI_PRTSC_APP ICON "assets/app-icon/PrtSc.ico"
