@@ -2,6 +2,7 @@
 
 #include "ArrowAnnotation.h"
 #include "CaptureToolbar.h"
+#include "OcrEngine.h"
 #include "Settings.h"
 
 #include <algorithm>
@@ -323,6 +324,44 @@ bool CopyScreenRectToClipboard(HWND owner, const RECT& screenRect)
     return true;
 }
 
+bool CopyTextToClipboard(HWND owner, const std::wstring& text)
+{
+    if (!OpenClipboard(owner))
+    {
+        return false;
+    }
+
+    const size_t byteCount = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL clipboardMemory = GlobalAlloc(GMEM_MOVEABLE, byteCount);
+    if (clipboardMemory == nullptr)
+    {
+        CloseClipboard();
+        return false;
+    }
+
+    void* clipboardData = GlobalLock(clipboardMemory);
+    if (clipboardData == nullptr)
+    {
+        GlobalFree(clipboardMemory);
+        CloseClipboard();
+        return false;
+    }
+
+    std::copy(text.c_str(), text.c_str() + text.size() + 1, static_cast<wchar_t*>(clipboardData));
+    GlobalUnlock(clipboardMemory);
+
+    EmptyClipboard();
+    if (SetClipboardData(CF_UNICODETEXT, clipboardMemory) == nullptr)
+    {
+        GlobalFree(clipboardMemory);
+        CloseClipboard();
+        return false;
+    }
+
+    CloseClipboard();
+    return true;
+}
+
 bool GetPngEncoderClsid(CLSID& clsid)
 {
     UINT encoderCount = 0;
@@ -531,6 +570,38 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     DestroyWindow(hwnd);
 }
 
+void OcrSelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
+{
+    if (!state.hasSelection || !IsRectVisible(state.selection))
+    {
+        return;
+    }
+
+    const RECT screenRect = SelectionToScreenRect(hwnd, state.selection);
+    state.toolbar.Hide();
+    ShowWindow(hwnd, SW_HIDE);
+    Sleep(80);
+
+    HBITMAP bitmap = CaptureScreenRect(screenRect);
+    state.arrowAnnotation.Hide();
+    if (bitmap != nullptr)
+    {
+        std::wstring text;
+        if (OcrEngine::RecognizeBitmapText(bitmap, text) && !text.empty())
+        {
+            CopyTextToClipboard(hwnd, text);
+        }
+        else
+        {
+            MessageBoxW(nullptr, L"OCR did not recognize any text.", L"PrtSc", MB_OK | MB_ICONINFORMATION);
+        }
+
+        DeleteObject(bitmap);
+    }
+
+    DestroyWindow(hwnd);
+}
+
 void ShowColorPicker(HWND hwnd, OverlayState& state)
 {
     static COLORREF customColors[16]{};
@@ -568,6 +639,13 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (state != nullptr)
         {
             SaveSelectionToFileAndClose(hwnd, *state);
+        }
+        return 0;
+
+    case kCaptureToolbarOcrMessage:
+        if (state != nullptr)
+        {
+            OcrSelectionToClipboardAndClose(hwnd, *state);
         }
         return 0;
 

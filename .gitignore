@@ -1,6 +1,8 @@
 build/
+build-*/
 out/
 PrtSc-*-win64.zip
+PrtSc-*-win32.zip
 assets/icon-concepts/
 
 .vs/

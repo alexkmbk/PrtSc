@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(PrtSc
-    VERSION 0.1.0
+    VERSION 0.3.0
     LANGUAGES CXX
 )
 
@@ -14,6 +14,8 @@ add_executable(PrtSc WIN32
     HotkeyManager.cpp
     HotkeyManager.h
     main.cpp
+    OcrEngine.cpp
+    OcrEngine.h
     PrtSc.rc
     resource.h
     ScreenOverlay.cpp
@@ -39,6 +41,25 @@ target_link_libraries(PrtSc PRIVATE
 )
 
 target_compile_definitions(PrtSc PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
+add_library(PrtScOcr SHARED
+    PrtScOcr.cpp
+)
+
+target_compile_features(PrtScOcr PRIVATE cxx_std_23)
+
+target_link_libraries(PrtScOcr PRIVATE
+    Gdiplus
+    Ole32
+    WindowsApp
+)
+
+target_compile_definitions(PrtScOcr PRIVATE
     UNICODE
     _UNICODE
     WIN32_LEAN_AND_MEAN

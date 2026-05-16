@@ -6,7 +6,8 @@
 namespace
 {
 constexpr wchar_t kToolbarClassName[] = L"PrtScCaptureToolbar";
-constexpr int kToolbarWidth = 573;
+constexpr int kToolbarWidthWithoutOcr = 573;
+constexpr int kToolbarWidthWithOcr = 685;
 constexpr int kToolbarHeight = 58;
 constexpr int kToolbarMargin = 8;
 constexpr int kButtonWidth = 104;
@@ -19,6 +20,9 @@ constexpr int kSaveButtonId = 3002;
 constexpr int kCancelButtonId = 3003;
 constexpr int kColorButtonId = 3004;
 constexpr int kArrowButtonId = 3005;
+constexpr int kOcrButtonId = 3006;
+
+bool gIsOcrSupported = false;
 
 HFONT GetDefaultGuiFont()
 {
@@ -30,14 +34,17 @@ void ApplyDefaultFont(HWND hwnd)
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDefaultGuiFont()), TRUE);
 }
 
+bool IsOcrSupported();
+
 void PlaceBelowSelection(HWND hwnd, POINT anchor)
 {
     const int screenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int screenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int screenRight = screenLeft + GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int screenBottom = screenTop + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    const int toolbarWidth = IsOcrSupported() ? kToolbarWidthWithOcr : kToolbarWidthWithoutOcr;
 
-    int x = anchor.x - kToolbarWidth;
+    int x = anchor.x - toolbarWidth;
     int y = anchor.y + kToolbarMargin;
 
     if (y + kToolbarHeight > screenBottom)
@@ -45,10 +52,10 @@ void PlaceBelowSelection(HWND hwnd, POINT anchor)
         y = anchor.y - kToolbarHeight - kToolbarMargin;
     }
 
-    x = std::max(screenLeft, std::min(x, screenRight - kToolbarWidth));
+    x = std::max(screenLeft, std::min(x, screenRight - toolbarWidth));
     y = std::max(screenTop, std::min(y, screenBottom - kToolbarHeight));
 
-    SetWindowPos(hwnd, HWND_TOPMOST, x, y, kToolbarWidth, kToolbarHeight, SWP_SHOWWINDOW);
+    SetWindowPos(hwnd, HWND_TOPMOST, x, y, toolbarWidth, kToolbarHeight, SWP_SHOWWINDOW);
 }
 
 CaptureToolbar* GetToolbar(HWND hwnd)
@@ -78,6 +85,37 @@ void PostOwnerMessageFromChild(HWND child, UINT message)
     }
 }
 
+bool DetectOcrSupport()
+{
+    using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
+
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == nullptr)
+    {
+        return false;
+    }
+
+    auto rtlGetVersion = reinterpret_cast<RtlGetVersionFn>(GetProcAddress(ntdll, "RtlGetVersion"));
+    if (rtlGetVersion == nullptr)
+    {
+        return false;
+    }
+
+    RTL_OSVERSIONINFOW version{};
+    version.dwOSVersionInfoSize = sizeof(version);
+    if (rtlGetVersion(&version) != 0)
+    {
+        return false;
+    }
+
+    return version.dwMajorVersion >= 10;
+}
+
+bool IsOcrSupported()
+{
+    return gIsOcrSupported;
+}
+
 LRESULT CALLBACK ToolbarButtonProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR)
 {
     if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN)
@@ -98,6 +136,14 @@ LRESULT CALLBACK ToolbarButtonProc(HWND hwnd, UINT message, WPARAM wparam, LPARA
             if (wparam == 'S')
             {
                 PostOwnerMessageFromChild(hwnd, kCaptureToolbarSaveMessage);
+                return 0;
+            }
+            if (wparam == 'O')
+            {
+                if (IsOcrSupported())
+                {
+                    PostOwnerMessageFromChild(hwnd, kCaptureToolbarOcrMessage);
+                }
                 return 0;
             }
         }
@@ -146,11 +192,23 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case WM_CREATE:
     {
         auto* toolbar = GetToolbar(hwnd);
-        CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", kButtonLeft);
-        CreateToolbarButton(hwnd, kSaveButtonId, L"Save", kButtonLeft + (kButtonWidth + kButtonGap));
-        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", kButtonLeft + ((kButtonWidth + kButtonGap) * 2), kButtonWidth, BS_OWNERDRAW);
-        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", kButtonLeft + ((kButtonWidth + kButtonGap) * 3), kButtonWidth, BS_OWNERDRAW);
-        CreateToolbarButton(hwnd, kCancelButtonId, L"Cancel", kButtonLeft + ((kButtonWidth + kButtonGap) * 4));
+        int left = kButtonLeft;
+        CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
+        left += kButtonWidth + kButtonGap;
+        CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
+        left += kButtonWidth + kButtonGap;
+
+        if (IsOcrSupported())
+        {
+            CreateToolbarButton(hwnd, kOcrButtonId, L"OCR", left);
+            left += kButtonWidth + kButtonGap;
+        }
+
+        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        left += kButtonWidth + kButtonGap;
+        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        left += kButtonWidth + kButtonGap;
+        CreateToolbarButton(hwnd, kCancelButtonId, L"Cancel", left);
 
         if (toolbar != nullptr)
         {
@@ -179,6 +237,14 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 PostOwnerMessage(hwnd, kCaptureToolbarSaveMessage);
                 return 0;
             }
+            if (wparam == 'O')
+            {
+                if (IsOcrSupported())
+                {
+                    PostOwnerMessage(hwnd, kCaptureToolbarOcrMessage);
+                }
+                return 0;
+            }
         }
         break;
 
@@ -203,6 +269,16 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             if (HWND owner = GetWindow(hwnd, GW_OWNER))
             {
                 PostMessageW(owner, kCaptureToolbarSaveMessage, 0, 0);
+            }
+            return 0;
+
+        case kOcrButtonId:
+            if (HWND owner = GetWindow(hwnd, GW_OWNER))
+            {
+                if (IsOcrSupported())
+                {
+                    PostMessageW(owner, kCaptureToolbarOcrMessage, 0, 0);
+                }
             }
             return 0;
 
@@ -331,6 +407,11 @@ bool RegisterToolbarClass(HINSTANCE instance)
 }
 }
 
+void InitializeCaptureToolbarOcrSupport()
+{
+    gIsOcrSupported = DetectOcrSupport();
+}
+
 CaptureToolbar::~CaptureToolbar()
 {
     Hide();
@@ -355,7 +436,7 @@ bool CaptureToolbar::Show(HWND owner, POINT anchorScreenPosition, COLORREF color
             WS_POPUP | WS_BORDER,
             anchorScreenPosition.x,
             anchorScreenPosition.y,
-            kToolbarWidth,
+            IsOcrSupported() ? kToolbarWidthWithOcr : kToolbarWidthWithoutOcr,
             kToolbarHeight,
             owner,
             nullptr,

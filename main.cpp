@@ -1,4 +1,5 @@
 #include "AppMessages.h"
+#include "CaptureToolbar.h"
 #include "HotkeyManager.h"
 #include "resource.h"
 #include "ScreenOverlay.h"
@@ -21,7 +22,15 @@ HANDLE gSingleInstanceMutex = nullptr;
 
 void EnableDpiAwareness()
 {
-    if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+    using SetProcessDpiAwarenessContextFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    auto setProcessDpiAwarenessContext = user32 != nullptr
+        ? reinterpret_cast<SetProcessDpiAwarenessContextFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))
+        : nullptr;
+
+    if (setProcessDpiAwarenessContext != nullptr &&
+        setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
     {
         return;
     }
@@ -145,6 +154,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
     }
 
     Settings::Instance().Load();
+    InitializeCaptureToolbarOcrSupport();
 
     if (!RegisterMainWindowClass(instance))
     {

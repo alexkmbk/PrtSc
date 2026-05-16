@@ -35,9 +35,34 @@ void ApplyDefaultFont(HWND hwnd)
     SendMessageW(hwnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDefaultGuiFont()), TRUE);
 }
 
+UINT GetWindowDpi(HWND hwnd)
+{
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    auto getDpiForWindow = user32 != nullptr
+        ? reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(user32, "GetDpiForWindow"))
+        : nullptr;
+
+    if (getDpiForWindow != nullptr)
+    {
+        return getDpiForWindow(hwnd);
+    }
+
+    HDC screenDc = GetDC(hwnd);
+    if (screenDc == nullptr)
+    {
+        return kBaseDpi;
+    }
+
+    const int dpi = GetDeviceCaps(screenDc, LOGPIXELSX);
+    ReleaseDC(hwnd, screenDc);
+    return dpi > 0 ? static_cast<UINT>(dpi) : kBaseDpi;
+}
+
 int ScaleForDpi(HWND hwnd, int value)
 {
-    const UINT dpi = GetDpiForWindow(hwnd);
+    const UINT dpi = GetWindowDpi(hwnd);
     return MulDiv(value, static_cast<int>(dpi), kBaseDpi);
 }
 
@@ -420,8 +445,9 @@ bool ShowSettingsDialog(HWND owner)
     }
 
     DialogState state;
-    const int dialogWidth = MulDiv(460, static_cast<int>(GetDpiForWindow(owner)), kBaseDpi);
-    const int dialogHeight = MulDiv(250, static_cast<int>(GetDpiForWindow(owner)), kBaseDpi);
+    const UINT dpi = GetWindowDpi(owner);
+    const int dialogWidth = MulDiv(460, static_cast<int>(dpi), kBaseDpi);
+    const int dialogHeight = MulDiv(250, static_cast<int>(dpi), kBaseDpi);
     HWND dialog = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         kSettingsDialogClassName,
