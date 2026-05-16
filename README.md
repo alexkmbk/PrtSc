@@ -16,3 +16,7 @@ The executable is created at:
 ```text
 build\Release\PrtSc.exe
 ```
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
