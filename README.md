@@ -1,6 +1,6 @@
 # PrtSc
 
-PrtSc is a small Windows screenshot utility that runs from the system tray (default hotkey `Ctrl+PrtSc`).
+PrtSc is a small Windows screenshot utility that runs from the system tray (default hotkey <kbd>Ctrl</kbd>+<kbd>PrtSc</kbd>).
 
 ![PrtSc screenshot](assets/app_screenshot.png)
 
@@ -8,7 +8,7 @@ PrtSc is a small Windows screenshot utility that runs from the system tray (defa
 
 PrtSc supports Windows 7 and newer.
 
-OCR is optional and is available on Windows 10 and newer. Keep `PrtScOcr.dll` next to `PrtSc.exe` to enable it.
+OCR is optional and is available on Windows 10 and newer.
 
 ## Shortcuts
 
