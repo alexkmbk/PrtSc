@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 #include <windows.h>
+#include <shlobj_core.h>
 
 namespace
 {
@@ -73,9 +74,42 @@ bool TryParseColor(const char* value, COLORREF& color)
     color = RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
     return true;
 }
+
+std::filesystem::path GetLocalAppDataPath()
+{
+    PWSTR localAppData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &localAppData)) &&
+        localAppData != nullptr)
+    {
+        std::filesystem::path path = localAppData;
+        CoTaskMemFree(localAppData);
+        return path;
+    }
+
+    wchar_t buffer[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (length > 0 && length < std::size(buffer))
+    {
+        return buffer;
+    }
+
+    const DWORD userProfileLength =
+        GetEnvironmentVariableW(L"USERPROFILE", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (userProfileLength > 0 && userProfileLength < std::size(buffer))
+    {
+        return std::filesystem::path(buffer) / L"AppData" / L"Local";
+    }
+
+    return std::filesystem::current_path();
 }
 
-const std::filesystem::path Settings::settingsFilePath_ = L"settings.ini";
+std::filesystem::path GetSettingsFilePath()
+{
+    return GetLocalAppDataPath() / L"PrtSc" / L"settings.ini";
+}
+}
+
+const std::filesystem::path Settings::settingsFilePath_ = GetSettingsFilePath();
 
 Settings& Settings::Instance()
 {
@@ -92,7 +126,7 @@ void Settings::Load()
 
     CSimpleIniA ini;
     ini.SetUnicode();
-    if (ini.LoadFile(settingsFilePath_.string().c_str()) < 0)
+    if (ini.LoadFile(settingsFilePath_.c_str()) < 0)
     {
         return;
     }
@@ -120,13 +154,16 @@ void Settings::Load()
 
 void Settings::Save() const
 {
+    std::error_code error;
+    std::filesystem::create_directories(settingsFilePath_.parent_path(), error);
+
     CSimpleIniA ini;
     ini.SetUnicode();
     ini.SetBoolValue("General", "RunAtSystemStartup", runAtSystemStartup_);
     ini.SetValue("Hotkeys", "Screenshot", WideToUtf8(screenshotHotkey_).c_str());
     ini.SetValue("Annotation", "Color", ColorToString(annotationColor_).c_str());
     ini.SetValue("Save", "LastDirectory", WideToUtf8(lastSaveDirectory_.wstring()).c_str());
-    ini.SaveFile(settingsFilePath_.string().c_str());
+    ini.SaveFile(settingsFilePath_.c_str());
 }
 
 const std::wstring& Settings::ScreenshotHotkey() const
