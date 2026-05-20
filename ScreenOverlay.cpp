@@ -21,9 +21,6 @@ namespace
 {
 constexpr wchar_t kOverlayClassName[] = L"PrtScScreenOverlay";
 constexpr BYTE kOverlayAlpha = 110;
-// Alpha 0 pixels in a layered window are click-through. Alpha 1 is visually
-// transparent, but keeps the selected area interactive for moving/resizing.
-constexpr uint32_t kTransparentPixel = 0x01000000;
 constexpr uint32_t kDimPixel = (static_cast<uint32_t>(kOverlayAlpha) << 24);
 constexpr uint32_t kBorderPixel = 0xFFFFFFFF;
 
@@ -38,6 +35,8 @@ enum class SelectionMode
 struct OverlayState
 {
     SIZE size{};
+    POINT screenOrigin{};
+    std::vector<uint32_t> screenshotPixels;
     POINT dragStart{};
     POINT moveOffset{};
     RECT selection{};
@@ -50,6 +49,13 @@ struct OverlayState
     bool hasSelection = false;
     bool isMouseDown = false;
     bool isDragging = false;
+};
+
+struct SelectionPixels
+{
+    int width = 0;
+    int height = 0;
+    std::vector<uint32_t> pixels;
 };
 
 POINT GetClientPoint(LPARAM lparam)
@@ -147,35 +153,64 @@ void DrawVerticalLine(std::vector<uint32_t>& pixels, SIZE size, int x, int top, 
     }
 }
 
-void DrawTransparentSelection(std::vector<uint32_t>& pixels, SIZE size, RECT selection)
+uint32_t WithOpaqueAlpha(uint32_t color)
 {
-    selection = ClampRectToOverlay(selection, size);
-    if (!IsRectVisible(selection))
+    return 0xFF000000 | (color & 0x00FFFFFF);
+}
+
+uint32_t WithoutAlpha(uint32_t color)
+{
+    return color & 0x00FFFFFF;
+}
+
+uint32_t DimScreenshotPixel(uint32_t color)
+{
+    constexpr uint32_t kDimNumerator = 255 - kOverlayAlpha;
+    const uint32_t red = ((color >> 16) & 0xFF) * kDimNumerator / 255;
+    const uint32_t green = ((color >> 8) & 0xFF) * kDimNumerator / 255;
+    const uint32_t blue = (color & 0xFF) * kDimNumerator / 255;
+    return 0xFF000000 | (red << 16) | (green << 8) | blue;
+}
+
+void DrawSelectionFromScreenshot(std::vector<uint32_t>& pixels, const OverlayState& state, RECT selection)
+{
+    selection = ClampRectToOverlay(selection, state.size);
+    if (!IsRectVisible(selection) || state.screenshotPixels.empty())
     {
         return;
     }
 
     for (int y = selection.top; y < selection.bottom; ++y)
     {
-        const size_t rowStart = static_cast<size_t>(y) * size.cx;
+        const size_t rowStart = static_cast<size_t>(y) * state.size.cx;
         for (int x = selection.left; x < selection.right; ++x)
         {
-            pixels[rowStart + x] = kTransparentPixel;
+            const size_t index = rowStart + x;
+            pixels[index] = WithOpaqueAlpha(state.screenshotPixels[index]);
         }
     }
 
-    DrawHorizontalLine(pixels, size, selection.top, selection.left, selection.right, kBorderPixel);
-    DrawHorizontalLine(pixels, size, selection.bottom - 1, selection.left, selection.right, kBorderPixel);
-    DrawVerticalLine(pixels, size, selection.left, selection.top, selection.bottom, kBorderPixel);
-    DrawVerticalLine(pixels, size, selection.right - 1, selection.top, selection.bottom, kBorderPixel);
+    DrawHorizontalLine(pixels, state.size, selection.top, selection.left, selection.right, kBorderPixel);
+    DrawHorizontalLine(pixels, state.size, selection.bottom - 1, selection.left, selection.right, kBorderPixel);
+    DrawVerticalLine(pixels, state.size, selection.left, selection.top, selection.bottom, kBorderPixel);
+    DrawVerticalLine(pixels, state.size, selection.right - 1, selection.top, selection.bottom, kBorderPixel);
 }
 
 void RenderOverlay(HWND hwnd, const OverlayState& state)
 {
-    std::vector<uint32_t> pixels(static_cast<size_t>(state.size.cx) * state.size.cy, kDimPixel);
+    const size_t pixelCount = static_cast<size_t>(state.size.cx) * state.size.cy;
+    std::vector<uint32_t> pixels(pixelCount, kDimPixel);
+    if (state.screenshotPixels.size() == pixelCount)
+    {
+        for (size_t index = 0; index < pixelCount; ++index)
+        {
+            pixels[index] = DimScreenshotPixel(state.screenshotPixels[index]);
+        }
+    }
+
     if (state.hasSelection)
     {
-        DrawTransparentSelection(pixels, state.size, state.selection);
+        DrawSelectionFromScreenshot(pixels, state, state.selection);
     }
 
     HDC screenDc = GetDC(nullptr);
@@ -254,23 +289,37 @@ RECT SelectionToScreenRect(HWND hwnd, const RECT& selection)
     };
 }
 
-HBITMAP CaptureScreenRect(const RECT& screenRect)
+bool CaptureScreenSnapshot(OverlayState& state, const RECT& screenRect)
 {
     const int width = screenRect.right - screenRect.left;
     const int height = screenRect.bottom - screenRect.top;
     if (width <= 0 || height <= 0)
     {
-        return nullptr;
+        return false;
     }
 
     HDC screenDc = GetDC(nullptr);
     HDC memoryDc = CreateCompatibleDC(screenDc);
-    HBITMAP bitmap = CreateCompatibleBitmap(screenDc, width, height);
-    if (bitmap == nullptr)
+
+    BITMAPINFO bitmapInfo{};
+    bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader);
+    bitmapInfo.bmiHeader.biWidth = width;
+    bitmapInfo.bmiHeader.biHeight = -height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    void* bitmapBits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &bitmapBits, nullptr, 0);
+    if (bitmap == nullptr || bitmapBits == nullptr)
     {
+        if (bitmap != nullptr)
+        {
+            DeleteObject(bitmap);
+        }
         DeleteDC(memoryDc);
         ReleaseDC(nullptr, screenDc);
-        return nullptr;
+        return false;
     }
 
     HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
@@ -282,24 +331,156 @@ HBITMAP CaptureScreenRect(const RECT& screenRect)
     if (!copied)
     {
         DeleteObject(bitmap);
+        return false;
+    }
+
+    state.size = {width, height};
+    state.screenOrigin = {screenRect.left, screenRect.top};
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    state.screenshotPixels.assign(static_cast<uint32_t*>(bitmapBits), static_cast<uint32_t*>(bitmapBits) + pixelCount);
+    DeleteObject(bitmap);
+    return true;
+}
+
+bool GetSelectionPixels(const OverlayState& state, const RECT& screenRect, SelectionPixels& selectionPixels)
+{
+    selectionPixels = {};
+
+    const int width = screenRect.right - screenRect.left;
+    const int height = screenRect.bottom - screenRect.top;
+    if (width <= 0 || height <= 0 || state.screenshotPixels.empty())
+    {
+        return false;
+    }
+
+    const int sourceLeft = screenRect.left - state.screenOrigin.x;
+    const int sourceTop = screenRect.top - state.screenOrigin.y;
+    if (sourceLeft < 0 || sourceTop < 0 || sourceLeft + width > state.size.cx || sourceTop + height > state.size.cy)
+    {
+        return false;
+    }
+
+    selectionPixels.width = width;
+    selectionPixels.height = height;
+    selectionPixels.pixels.resize(static_cast<size_t>(width) * height);
+
+    auto* destination = selectionPixels.pixels.data();
+    for (int y = 0; y < height; ++y)
+    {
+        const size_t sourceIndex = static_cast<size_t>(sourceTop + y) * state.size.cx + sourceLeft;
+        const size_t destinationIndex = static_cast<size_t>(y) * width;
+        std::transform(
+            state.screenshotPixels.data() + sourceIndex,
+            state.screenshotPixels.data() + sourceIndex + width,
+            destination + destinationIndex,
+            WithoutAlpha);
+    }
+
+    return true;
+}
+
+HBITMAP CreateBitmapFromSelectionPixels(const SelectionPixels& selectionPixels)
+{
+    if (selectionPixels.width <= 0 || selectionPixels.height <= 0 || selectionPixels.pixels.empty())
+    {
+        return nullptr;
+    }
+
+    HDC screenDc = GetDC(nullptr);
+    if (screenDc == nullptr)
+    {
+        return nullptr;
+    }
+
+    HBITMAP bitmap = CreateCompatibleBitmap(screenDc, selectionPixels.width, selectionPixels.height);
+    if (bitmap == nullptr)
+    {
+        ReleaseDC(nullptr, screenDc);
+        return nullptr;
+    }
+
+    BITMAPINFO bitmapInfo{};
+    bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader);
+    bitmapInfo.bmiHeader.biWidth = selectionPixels.width;
+    bitmapInfo.bmiHeader.biHeight = -selectionPixels.height;
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    const int scanLines = SetDIBits(
+        screenDc,
+        bitmap,
+        0,
+        static_cast<UINT>(selectionPixels.height),
+        selectionPixels.pixels.data(),
+        &bitmapInfo,
+        DIB_RGB_COLORS);
+    ReleaseDC(nullptr, screenDc);
+    if (scanLines != selectionPixels.height)
+    {
+        DeleteObject(bitmap);
         return nullptr;
     }
 
     return bitmap;
 }
 
-bool CopyBitmapToClipboard(HWND owner, HBITMAP bitmap)
+bool CopyDibToClipboard(HWND owner, const SelectionPixels& selectionPixels)
 {
-    if (!OpenClipboard(owner))
+    if (selectionPixels.width <= 0 || selectionPixels.height <= 0 || selectionPixels.pixels.empty())
     {
         return false;
     }
 
+    const size_t headerSize = sizeof(BITMAPINFOHEADER);
+    const size_t pixelsSize = selectionPixels.pixels.size() * sizeof(uint32_t);
+    HGLOBAL clipboardMemory = GlobalAlloc(GMEM_MOVEABLE, headerSize + pixelsSize);
+    if (clipboardMemory == nullptr)
+    {
+        return false;
+    }
+
+    auto* dib = static_cast<BYTE*>(GlobalLock(clipboardMemory));
+    if (dib == nullptr)
+    {
+        GlobalFree(clipboardMemory);
+        return false;
+    }
+
+    auto* header = reinterpret_cast<BITMAPINFOHEADER*>(dib);
+    header->biSize = sizeof(BITMAPINFOHEADER);
+    header->biWidth = selectionPixels.width;
+    header->biHeight = selectionPixels.height;
+    header->biPlanes = 1;
+    header->biBitCount = 32;
+    header->biCompression = BI_RGB;
+    header->biSizeImage = static_cast<DWORD>(pixelsSize);
+    header->biXPelsPerMeter = 0;
+    header->biYPelsPerMeter = 0;
+    header->biClrUsed = 0;
+    header->biClrImportant = 0;
+
+    auto* destination = reinterpret_cast<uint32_t*>(dib + headerSize);
+    for (int y = 0; y < selectionPixels.height; ++y)
+    {
+        const size_t sourceIndex = static_cast<size_t>(y) * selectionPixels.width;
+        const size_t destinationIndex = static_cast<size_t>(selectionPixels.height - 1 - y) * selectionPixels.width;
+        std::copy_n(selectionPixels.pixels.data() + sourceIndex, selectionPixels.width, destination + destinationIndex);
+    }
+
+    GlobalUnlock(clipboardMemory);
+
+    if (!OpenClipboard(owner))
+    {
+        GlobalFree(clipboardMemory);
+        return false;
+    }
+
     EmptyClipboard();
-    if (SetClipboardData(CF_BITMAP, bitmap) == nullptr)
+    if (SetClipboardData(CF_DIB, clipboardMemory) == nullptr)
     {
         CloseClipboard();
-        DeleteObject(bitmap);
+        GlobalFree(clipboardMemory);
         return false;
     }
 
@@ -307,21 +488,15 @@ bool CopyBitmapToClipboard(HWND owner, HBITMAP bitmap)
     return true;
 }
 
-bool CopyScreenRectToClipboard(HWND owner, const RECT& screenRect)
+bool CopyScreenRectToClipboard(HWND owner, const OverlayState& state, const RECT& screenRect)
 {
-    HBITMAP bitmap = CaptureScreenRect(screenRect);
-    if (bitmap == nullptr)
+    SelectionPixels selectionPixels;
+    if (!GetSelectionPixels(state, screenRect, selectionPixels))
     {
         return false;
     }
 
-    if (!CopyBitmapToClipboard(owner, bitmap))
-    {
-        DeleteObject(bitmap);
-        return false;
-    }
-
-    return true;
+    return CopyDibToClipboard(owner, selectionPixels);
 }
 
 bool CopyTextToClipboard(HWND owner, const std::wstring& text)
@@ -390,6 +565,12 @@ bool GetPngEncoderClsid(CLSID& clsid)
     return false;
 }
 
+bool PathExists(const std::filesystem::path& path)
+{
+    std::error_code error;
+    return std::filesystem::exists(path, error);
+}
+
 std::filesystem::path MakeUniquePngPath(std::filesystem::path path)
 {
     if (path.extension().empty())
@@ -397,7 +578,7 @@ std::filesystem::path MakeUniquePngPath(std::filesystem::path path)
         path.replace_extension(L".png");
     }
 
-    if (!std::filesystem::exists(path))
+    if (!PathExists(path))
     {
         return path;
     }
@@ -409,7 +590,7 @@ std::filesystem::path MakeUniquePngPath(std::filesystem::path path)
     for (int index = 1;; ++index)
     {
         std::filesystem::path candidate = directory / (stem + L"_" + std::to_wstring(index) + extension);
-        if (!std::filesystem::exists(candidate))
+        if (!PathExists(candidate))
         {
             return candidate;
         }
@@ -437,7 +618,7 @@ std::wstring GetDefaultScreenshotFilename()
 std::filesystem::path GetInitialSaveDirectory()
 {
     const std::filesystem::path& savedDirectory = Settings::Instance().LastSaveDirectory();
-    if (!savedDirectory.empty() && std::filesystem::exists(savedDirectory))
+    if (!savedDirectory.empty() && PathExists(savedDirectory))
     {
         return savedDirectory;
     }
@@ -447,13 +628,15 @@ std::filesystem::path GetInitialSaveDirectory()
     {
         std::filesystem::path result = picturesPath;
         CoTaskMemFree(picturesPath);
-        if (std::filesystem::exists(result))
+        if (PathExists(result))
         {
             return result;
         }
     }
 
-    return std::filesystem::current_path();
+    std::error_code error;
+    std::filesystem::path currentPath = std::filesystem::current_path(error);
+    return error ? std::filesystem::path{} : currentPath;
 }
 
 bool ShowSavePngDialog(std::filesystem::path& selectedPath)
@@ -485,7 +668,7 @@ bool ShowSavePngDialog(std::filesystem::path& selectedPath)
         selectedPath.replace_extension(L".png");
     }
 
-    if (std::filesystem::exists(selectedPath))
+    if (PathExists(selectedPath))
     {
         const int answer = MessageBoxW(
             nullptr,
@@ -503,8 +686,13 @@ bool ShowSavePngDialog(std::filesystem::path& selectedPath)
     return true;
 }
 
-bool SaveBitmapAsPng(HBITMAP bitmap, const std::filesystem::path& path)
+bool SaveSelectionPixelsAsPng(const SelectionPixels& selectionPixels, const std::filesystem::path& path)
 {
+    if (selectionPixels.width <= 0 || selectionPixels.height <= 0 || selectionPixels.pixels.empty())
+    {
+        return false;
+    }
+
     Gdiplus::GdiplusStartupInput startupInput{};
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr) != Gdiplus::Ok)
@@ -517,7 +705,12 @@ bool SaveBitmapAsPng(HBITMAP bitmap, const std::filesystem::path& path)
     bool saved = false;
     if (hasPngEncoder)
     {
-        Gdiplus::Bitmap gdiplusBitmap(bitmap, nullptr);
+        Gdiplus::Bitmap gdiplusBitmap(
+            selectionPixels.width,
+            selectionPixels.height,
+            selectionPixels.width * static_cast<int>(sizeof(uint32_t)),
+            PixelFormat32bppRGB,
+            reinterpret_cast<BYTE*>(const_cast<uint32_t*>(selectionPixels.pixels.data())));
         saved = gdiplusBitmap.Save(path.wstring().c_str(), &pngClsid, nullptr) == Gdiplus::Ok;
     }
 
@@ -535,9 +728,8 @@ void CopySelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
     const RECT screenRect = SelectionToScreenRect(hwnd, state.selection);
     state.toolbar.Hide();
     ShowWindow(hwnd, SW_HIDE);
-    Sleep(80);
 
-    CopyScreenRectToClipboard(hwnd, screenRect);
+    CopyScreenRectToClipboard(hwnd, state, screenRect);
     state.arrowAnnotation.Hide();
     DestroyWindow(hwnd);
 }
@@ -552,19 +744,16 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     const RECT screenRect = SelectionToScreenRect(hwnd, state.selection);
     state.toolbar.Hide();
     ShowWindow(hwnd, SW_HIDE);
-    Sleep(80);
 
-    HBITMAP bitmap = CaptureScreenRect(screenRect);
     state.arrowAnnotation.Hide();
-    if (bitmap != nullptr)
+    SelectionPixels selectionPixels;
+    if (GetSelectionPixels(state, screenRect, selectionPixels))
     {
         std::filesystem::path selectedPath;
         if (ShowSavePngDialog(selectedPath))
         {
-            SaveBitmapAsPng(bitmap, selectedPath);
+            SaveSelectionPixelsAsPng(selectionPixels, selectedPath);
         }
-
-        DeleteObject(bitmap);
     }
 
     DestroyWindow(hwnd);
@@ -580,9 +769,14 @@ void OcrSelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
     const RECT screenRect = SelectionToScreenRect(hwnd, state.selection);
     state.toolbar.Hide();
     ShowWindow(hwnd, SW_HIDE);
-    Sleep(80);
 
-    HBITMAP bitmap = CaptureScreenRect(screenRect);
+    SelectionPixels selectionPixels;
+    HBITMAP bitmap = nullptr;
+    if (GetSelectionPixels(state, screenRect, selectionPixels))
+    {
+        bitmap = CreateBitmapFromSelectionPixels(selectionPixels);
+    }
+
     state.arrowAnnotation.Hide();
     if (bitmap != nullptr)
     {
@@ -895,8 +1089,11 @@ bool ScreenOverlay::Show(HINSTANCE instance)
     const int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
     auto state = std::make_unique<OverlayState>();
-    state->size = {width, height};
     state->annotationColor = Settings::Instance().AnnotationColor();
+    if (!CaptureScreenSnapshot(*state, {x, y, x + width, y + height}))
+    {
+        return false;
+    }
 
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
