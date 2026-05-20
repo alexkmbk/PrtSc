@@ -1,11 +1,11 @@
 #include "ScreenOverlay.h"
 
-#include "ArrowAnnotation.h"
 #include "CaptureToolbar.h"
 #include "OcrEngine.h"
 #include "Settings.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -23,6 +23,10 @@ constexpr wchar_t kOverlayClassName[] = L"PrtScScreenOverlay";
 constexpr BYTE kOverlayAlpha = 110;
 constexpr uint32_t kDimPixel = (static_cast<uint32_t>(kOverlayAlpha) << 24);
 constexpr uint32_t kBorderPixel = 0xFFFFFFFF;
+constexpr float kArrowWidth = 4.0F;
+constexpr float kArrowHeadLength = 16.0F;
+constexpr float kArrowHeadAngleRadians = 0.65F;
+constexpr ULONGLONG kRenderThrottleMilliseconds = 16;
 
 enum class SelectionMode
 {
@@ -32,23 +36,56 @@ enum class SelectionMode
     Arrow,
 };
 
+struct ArrowLine
+{
+    POINT start{};
+    POINT end{};
+    COLORREF color = RGB(255, 0, 0);
+    bool isVisible = true;
+};
+
 struct OverlayState
 {
+    ~OverlayState()
+    {
+        if (renderBitmap != nullptr)
+        {
+            DeleteObject(renderBitmap);
+        }
+
+        if (hasGdiplus)
+        {
+            Gdiplus::GdiplusShutdown(gdiplusToken);
+        }
+    }
+
     SIZE size{};
     POINT screenOrigin{};
     std::vector<uint32_t> screenshotPixels;
+    std::vector<uint32_t> dimmedScreenshotPixels;
+    std::vector<uint32_t> renderPixels;
+    HBITMAP renderBitmap = nullptr;
+    void* renderBitmapBits = nullptr;
+    ULONG_PTR gdiplusToken = 0;
+    ULONGLONG lastRenderTick = 0;
     POINT dragStart{};
     POINT moveOffset{};
     RECT selection{};
     RECT previousSelection{};
-    ArrowAnnotation arrowAnnotation{};
     CaptureToolbar toolbar{};
+    std::vector<ArrowLine> arrows;
+    std::vector<ArrowLine> previousArrows;
+    ArrowLine previewArrow{};
     COLORREF annotationColor = RGB(255, 0, 0);
+    int currentArrowIndex = -1;
+    int previousArrowIndex = -1;
     SelectionMode mode = SelectionMode::None;
     bool isArrowToolActive = false;
+    bool hasPreviewArrow = false;
     bool hasSelection = false;
     bool isMouseDown = false;
     bool isDragging = false;
+    bool hasGdiplus = false;
 };
 
 struct SelectionPixels
@@ -57,6 +94,12 @@ struct SelectionPixels
     int height = 0;
     std::vector<uint32_t> pixels;
 };
+
+bool StartGdiplus(ULONG_PTR& gdiplusToken)
+{
+    Gdiplus::GdiplusStartupInput startupInput{};
+    return Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr) == Gdiplus::Ok;
+}
 
 POINT GetClientPoint(LPARAM lparam)
 {
@@ -91,6 +134,24 @@ bool IsCtrlPressed()
     return (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 }
 
+int GetLastVisibleArrowIndex(const std::vector<ArrowLine>& arrows)
+{
+    for (int index = static_cast<int>(arrows.size()) - 1; index >= 0; --index)
+    {
+        if (arrows[static_cast<size_t>(index)].isVisible)
+        {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+void ResetArrowUndoState(OverlayState& state)
+{
+    state.currentArrowIndex = GetLastVisibleArrowIndex(state.arrows);
+}
+
 LONG ClampLong(LONG value, LONG low, LONG high)
 {
     return std::clamp(value, low, high);
@@ -119,6 +180,20 @@ RECT MoveRectToPoint(const RECT& rect, POINT point, POINT offset, SIZE size)
         left + width,
         top + height,
     };
+}
+
+std::vector<ArrowLine> MoveArrows(const std::vector<ArrowLine>& arrows, LONG dx, LONG dy)
+{
+    std::vector<ArrowLine> movedArrows = arrows;
+    for (ArrowLine& arrow : movedArrows)
+    {
+        arrow.start.x += dx;
+        arrow.start.y += dy;
+        arrow.end.x += dx;
+        arrow.end.y += dy;
+    }
+
+    return movedArrows;
 }
 
 void DrawHorizontalLine(std::vector<uint32_t>& pixels, SIZE size, int y, int left, int right, uint32_t color)
@@ -196,25 +271,66 @@ void DrawSelectionFromScreenshot(std::vector<uint32_t>& pixels, const OverlaySta
     DrawVerticalLine(pixels, state.size, selection.right - 1, selection.top, selection.bottom, kBorderPixel);
 }
 
-void RenderOverlay(HWND hwnd, const OverlayState& state)
+Gdiplus::Color ToGdiplusColor(COLORREF color)
 {
-    const size_t pixelCount = static_cast<size_t>(state.size.cx) * state.size.cy;
-    std::vector<uint32_t> pixels(pixelCount, kDimPixel);
-    if (state.screenshotPixels.size() == pixelCount)
+    return Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color));
+}
+
+void DrawArrowLine(Gdiplus::Graphics& graphics, const ArrowLine& arrow, int offsetX = 0, int offsetY = 0)
+{
+    const float startX = static_cast<float>(arrow.start.x - offsetX);
+    const float startY = static_cast<float>(arrow.start.y - offsetY);
+    const float endX = static_cast<float>(arrow.end.x - offsetX);
+    const float endY = static_cast<float>(arrow.end.y - offsetY);
+    const float dx = endX - startX;
+    const float dy = endY - startY;
+    const float length = std::sqrt((dx * dx) + (dy * dy));
+    if (length < 2.0F)
     {
-        for (size_t index = 0; index < pixelCount; ++index)
+        return;
+    }
+
+    Gdiplus::Pen pen(ToGdiplusColor(arrow.color), kArrowWidth);
+    pen.SetStartCap(Gdiplus::LineCapRound);
+    pen.SetEndCap(Gdiplus::LineCapRound);
+    graphics.DrawLine(&pen, startX, startY, endX, endY);
+
+    const float angle = std::atan2(dy, dx);
+    const float leftAngle = angle + 3.14159265F - kArrowHeadAngleRadians;
+    const float rightAngle = angle + 3.14159265F + kArrowHeadAngleRadians;
+
+    graphics.DrawLine(
+        &pen,
+        endX,
+        endY,
+        endX + std::cos(leftAngle) * kArrowHeadLength,
+        endY + std::sin(leftAngle) * kArrowHeadLength);
+    graphics.DrawLine(
+        &pen,
+        endX,
+        endY,
+        endX + std::cos(rightAngle) * kArrowHeadLength,
+        endY + std::sin(rightAngle) * kArrowHeadLength);
+}
+
+void DrawArrows(Gdiplus::Graphics& graphics, const std::vector<ArrowLine>& arrows, int offsetX = 0, int offsetY = 0)
+{
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    for (const ArrowLine& arrow : arrows)
+    {
+        if (arrow.isVisible)
         {
-            pixels[index] = DimScreenshotPixel(state.screenshotPixels[index]);
+            DrawArrowLine(graphics, arrow, offsetX, offsetY);
         }
     }
+}
 
-    if (state.hasSelection)
+bool EnsureRenderBitmap(OverlayState& state, HDC screenDc)
+{
+    if (state.renderBitmap != nullptr && state.renderBitmapBits != nullptr)
     {
-        DrawSelectionFromScreenshot(pixels, state, state.selection);
+        return true;
     }
-
-    HDC screenDc = GetDC(nullptr);
-    HDC memoryDc = CreateCompatibleDC(screenDc);
 
     BITMAPINFO bitmapInfo{};
     bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader);
@@ -224,13 +340,67 @@ void RenderOverlay(HWND hwnd, const OverlayState& state)
     bitmapInfo.bmiHeader.biBitCount = 32;
     bitmapInfo.bmiHeader.biCompression = BI_RGB;
 
-    void* bitmapBits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &bitmapBits, nullptr, 0);
-    if (bitmap != nullptr && bitmapBits != nullptr)
+    state.renderBitmap = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &state.renderBitmapBits, nullptr, 0);
+    if (state.renderBitmap == nullptr || state.renderBitmapBits == nullptr)
     {
-        std::copy(pixels.begin(), pixels.end(), static_cast<uint32_t*>(bitmapBits));
+        if (state.renderBitmap != nullptr)
+        {
+            DeleteObject(state.renderBitmap);
+            state.renderBitmap = nullptr;
+        }
 
-        HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+        state.renderBitmapBits = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+void BuildOverlayPixels(OverlayState& state)
+{
+    const size_t pixelCount = static_cast<size_t>(state.size.cx) * state.size.cy;
+    state.renderPixels.resize(pixelCount);
+    if (state.dimmedScreenshotPixels.size() == pixelCount)
+    {
+        std::copy(state.dimmedScreenshotPixels.begin(), state.dimmedScreenshotPixels.end(), state.renderPixels.begin());
+    }
+    else
+    {
+        std::fill(state.renderPixels.begin(), state.renderPixels.end(), kDimPixel);
+    }
+
+    if (state.hasSelection)
+    {
+        DrawSelectionFromScreenshot(state.renderPixels, state, state.selection);
+    }
+}
+
+void RenderOverlay(HWND hwnd, OverlayState& state)
+{
+    state.lastRenderTick = GetTickCount64();
+    BuildOverlayPixels(state);
+    HDC screenDc = GetDC(nullptr);
+    if (screenDc == nullptr)
+    {
+        return;
+    }
+
+    HDC memoryDc = CreateCompatibleDC(screenDc);
+    if (memoryDc != nullptr && EnsureRenderBitmap(state, screenDc))
+    {
+        std::copy(state.renderPixels.begin(), state.renderPixels.end(), static_cast<uint32_t*>(state.renderBitmapBits));
+
+        HGDIOBJ oldBitmap = SelectObject(memoryDc, state.renderBitmap);
+        if (state.hasGdiplus)
+        {
+            Gdiplus::Graphics graphics(memoryDc);
+            DrawArrows(graphics, state.arrows);
+            if (state.hasPreviewArrow)
+            {
+                DrawArrowLine(graphics, state.previewArrow);
+            }
+        }
+
         POINT sourcePoint{};
         POINT windowPoint{};
         RECT windowRect{};
@@ -246,11 +416,25 @@ void RenderOverlay(HWND hwnd, const OverlayState& state)
         SIZE layerSize = state.size;
         UpdateLayeredWindow(hwnd, screenDc, &windowPoint, &layerSize, memoryDc, &sourcePoint, 0, &blend, ULW_ALPHA);
         SelectObject(memoryDc, oldBitmap);
-        DeleteObject(bitmap);
     }
 
-    DeleteDC(memoryDc);
+    if (memoryDc != nullptr)
+    {
+        DeleteDC(memoryDc);
+    }
+
     ReleaseDC(nullptr, screenDc);
+}
+
+void RenderOverlayThrottled(HWND hwnd, OverlayState& state)
+{
+    const ULONGLONG now = GetTickCount64();
+    if (state.lastRenderTick != 0 && now - state.lastRenderTick < kRenderThrottleMilliseconds)
+    {
+        return;
+    }
+
+    RenderOverlay(hwnd, state);
 }
 
 void ShowToolbarForSelection(HWND hwnd, OverlayState& state)
@@ -338,8 +522,42 @@ bool CaptureScreenSnapshot(OverlayState& state, const RECT& screenRect)
     state.screenOrigin = {screenRect.left, screenRect.top};
     const size_t pixelCount = static_cast<size_t>(width) * height;
     state.screenshotPixels.assign(static_cast<uint32_t*>(bitmapBits), static_cast<uint32_t*>(bitmapBits) + pixelCount);
+    state.dimmedScreenshotPixels.resize(pixelCount);
+    std::transform(
+        state.screenshotPixels.begin(),
+        state.screenshotPixels.end(),
+        state.dimmedScreenshotPixels.begin(),
+        DimScreenshotPixel);
+    state.renderPixels.resize(pixelCount);
     DeleteObject(bitmap);
     return true;
+}
+
+void DrawArrowsOnSelectionPixels(const OverlayState& state, SelectionPixels& selectionPixels, int offsetX, int offsetY)
+{
+    if (state.arrows.empty() || selectionPixels.width <= 0 || selectionPixels.height <= 0 || selectionPixels.pixels.empty())
+    {
+        return;
+    }
+
+    ULONG_PTR gdiplusToken = 0;
+    if (!StartGdiplus(gdiplusToken))
+    {
+        return;
+    }
+
+    {
+        Gdiplus::Bitmap bitmap(
+            selectionPixels.width,
+            selectionPixels.height,
+            selectionPixels.width * static_cast<int>(sizeof(uint32_t)),
+            PixelFormat32bppRGB,
+            reinterpret_cast<BYTE*>(selectionPixels.pixels.data()));
+        Gdiplus::Graphics graphics(&bitmap);
+        DrawArrows(graphics, state.arrows, offsetX, offsetY);
+    }
+
+    Gdiplus::GdiplusShutdown(gdiplusToken);
 }
 
 bool GetSelectionPixels(const OverlayState& state, const RECT& screenRect, SelectionPixels& selectionPixels)
@@ -376,6 +594,7 @@ bool GetSelectionPixels(const OverlayState& state, const RECT& screenRect, Selec
             WithoutAlpha);
     }
 
+    DrawArrowsOnSelectionPixels(state, selectionPixels, sourceLeft, sourceTop);
     return true;
 }
 
@@ -693,9 +912,8 @@ bool SaveSelectionPixelsAsPng(const SelectionPixels& selectionPixels, const std:
         return false;
     }
 
-    Gdiplus::GdiplusStartupInput startupInput{};
     ULONG_PTR gdiplusToken = 0;
-    if (Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr) != Gdiplus::Ok)
+    if (!StartGdiplus(gdiplusToken))
     {
         return false;
     }
@@ -730,7 +948,6 @@ void CopySelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
     ShowWindow(hwnd, SW_HIDE);
 
     CopyScreenRectToClipboard(hwnd, state, screenRect);
-    state.arrowAnnotation.Hide();
     DestroyWindow(hwnd);
 }
 
@@ -745,7 +962,6 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     state.toolbar.Hide();
     ShowWindow(hwnd, SW_HIDE);
 
-    state.arrowAnnotation.Hide();
     SelectionPixels selectionPixels;
     if (GetSelectionPixels(state, screenRect, selectionPixels))
     {
@@ -777,7 +993,6 @@ void OcrSelectionToClipboardAndClose(HWND hwnd, OverlayState& state)
         bitmap = CreateBitmapFromSelectionPixels(selectionPixels);
     }
 
-    state.arrowAnnotation.Hide();
     if (bitmap != nullptr)
     {
         std::wstring text;
@@ -816,6 +1031,57 @@ void ShowColorPicker(HWND hwnd, OverlayState& state)
     }
 }
 
+bool HideCurrentArrow(OverlayState& state)
+{
+    if (state.currentArrowIndex < 0 || state.currentArrowIndex >= static_cast<int>(state.arrows.size()))
+    {
+        return false;
+    }
+
+    state.arrows[static_cast<size_t>(state.currentArrowIndex)].isVisible = false;
+    ResetArrowUndoState(state);
+    state.hasPreviewArrow = false;
+    return true;
+}
+
+bool ShowNextArrow(OverlayState& state)
+{
+    const int nextArrowIndex = state.currentArrowIndex + 1;
+    if (nextArrowIndex < 0 || nextArrowIndex >= static_cast<int>(state.arrows.size()))
+    {
+        return false;
+    }
+
+    ArrowLine& arrow = state.arrows[static_cast<size_t>(nextArrowIndex)];
+    if (arrow.isVisible)
+    {
+        return false;
+    }
+
+    arrow.isVisible = true;
+    state.currentArrowIndex = nextArrowIndex;
+    state.hasPreviewArrow = false;
+    return true;
+}
+
+void UndoArrowAndRefresh(HWND hwnd, OverlayState& state)
+{
+    if (HideCurrentArrow(state))
+    {
+        RenderOverlay(hwnd, state);
+        ShowToolbarForSelection(hwnd, state);
+    }
+}
+
+void RedoArrowAndRefresh(HWND hwnd, OverlayState& state)
+{
+    if (ShowNextArrow(state))
+    {
+        RenderOverlay(hwnd, state);
+        ShowToolbarForSelection(hwnd, state);
+    }
+}
+
 LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     auto* state = reinterpret_cast<OverlayState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -840,6 +1106,20 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (state != nullptr)
         {
             OcrSelectionToClipboardAndClose(hwnd, *state);
+        }
+        return 0;
+
+    case kCaptureToolbarUndoArrowMessage:
+        if (state != nullptr)
+        {
+            UndoArrowAndRefresh(hwnd, *state);
+        }
+        return 0;
+
+    case kCaptureToolbarRedoArrowMessage:
+        if (state != nullptr)
+        {
+            RedoArrowAndRefresh(hwnd, *state);
         }
         return 0;
 
@@ -886,6 +1166,16 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 SaveSelectionToFileAndClose(hwnd, *state);
                 return 0;
             }
+            if (wparam == 'Z')
+            {
+                UndoArrowAndRefresh(hwnd, *state);
+                return 0;
+            }
+            if (wparam == 'Y')
+            {
+                RedoArrowAndRefresh(hwnd, *state);
+                return 0;
+            }
         }
         if (wparam == VK_ESCAPE)
         {
@@ -905,6 +1195,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->isDragging = false;
             state->dragStart = point;
             state->previousSelection = state->selection;
+            state->previousArrows = state->arrows;
+            state->previousArrowIndex = state->currentArrowIndex;
+            state->hasPreviewArrow = false;
             state->toolbar.Hide();
 
             if (state->isArrowToolActive && state->hasSelection)
@@ -912,7 +1205,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 if (IsPointInsideRect(point, state->selection))
                 {
                     state->mode = SelectionMode::Arrow;
-                    state->arrowAnnotation.Hide();
                 }
                 else
                 {
@@ -933,6 +1225,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             else
             {
                 state->mode = SelectionMode::Create;
+                state->arrows.clear();
+                ResetArrowUndoState(*state);
             }
         }
         return 0;
@@ -947,18 +1241,21 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 if (arrowEnd.x != state->dragStart.x || arrowEnd.y != state->dragStart.y)
                 {
                     state->isDragging = true;
-                    state->arrowAnnotation.Show(
-                        hwnd,
-                        ClientPointToScreen(hwnd, state->dragStart),
-                        ClientPointToScreen(hwnd, arrowEnd),
-                        state->annotationColor);
+                    state->hasPreviewArrow = true;
+                    state->previewArrow = {state->dragStart, arrowEnd, state->annotationColor};
+                    RenderOverlayThrottled(hwnd, *state);
                 }
             }
             else if (state->mode == SelectionMode::Move && state->hasSelection)
             {
                 state->isDragging = true;
                 state->selection = MoveRectToPoint(state->previousSelection, current, state->moveOffset, state->size);
-                RenderOverlay(hwnd, *state);
+                state->arrows = MoveArrows(
+                    state->previousArrows,
+                    state->selection.left - state->previousSelection.left,
+                    state->selection.top - state->previousSelection.top);
+                state->currentArrowIndex = state->previousArrowIndex;
+                RenderOverlayThrottled(hwnd, *state);
             }
             else if (state->mode == SelectionMode::Create)
             {
@@ -969,7 +1266,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     state->isDragging = true;
                     state->hasSelection = true;
                     state->selection = selection;
-                    RenderOverlay(hwnd, *state);
+                    RenderOverlayThrottled(hwnd, *state);
                 }
             }
         }
@@ -985,6 +1282,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         if (state != nullptr)
         {
             const bool wasDragging = state->isDragging;
+            const bool wasDrawingArrow = state->mode == SelectionMode::Arrow;
+            const bool hadPreviewArrow = state->hasPreviewArrow;
+            const ArrowLine completedArrow = state->previewArrow;
 
             if (GetCapture() == hwnd)
             {
@@ -994,12 +1294,30 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             if (!wasDragging)
             {
                 state->selection = state->previousSelection;
+                state->arrows = state->previousArrows;
+                state->currentArrowIndex = state->previousArrowIndex;
                 state->hasSelection = IsRectVisible(state->selection);
+                state->hasPreviewArrow = false;
                 RenderOverlay(hwnd, *state);
             }
             else
             {
                 state->hasSelection = IsRectVisible(state->selection);
+                if (wasDrawingArrow && hadPreviewArrow)
+                {
+                    state->arrows.erase(
+                        std::remove_if(
+                            state->arrows.begin(),
+                            state->arrows.end(),
+                            [](const ArrowLine& arrow)
+                            {
+                                return !arrow.isVisible;
+                            }),
+                        state->arrows.end());
+                    state->arrows.push_back(completedArrow);
+                    ResetArrowUndoState(*state);
+                    state->hasPreviewArrow = false;
+                }
                 RenderOverlay(hwnd, *state);
                 ShowToolbarForSelection(hwnd, *state);
             }
@@ -1007,6 +1325,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->isMouseDown = false;
             state->isDragging = false;
             state->isArrowToolActive = false;
+            state->hasPreviewArrow = false;
             state->mode = SelectionMode::None;
         }
         return 0;
@@ -1016,7 +1335,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         {
             state->isMouseDown = false;
             state->isDragging = false;
+            state->hasPreviewArrow = false;
             state->mode = SelectionMode::None;
+            RenderOverlay(hwnd, *state);
         }
         return 0;
 
@@ -1038,7 +1359,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     case WM_DESTROY:
     {
-        state->arrowAnnotation.Hide();
         delete state;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         return 0;
@@ -1094,6 +1414,7 @@ bool ScreenOverlay::Show(HINSTANCE instance)
     {
         return false;
     }
+    state->hasGdiplus = StartGdiplus(state->gdiplusToken);
 
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,

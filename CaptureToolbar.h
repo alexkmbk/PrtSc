@@ -8,6 +8,8 @@ constexpr UINT kCaptureToolbarCancelMessage = WM_APP + 102;
 constexpr UINT kCaptureToolbarColorMessage = WM_APP + 103;
 constexpr UINT kCaptureToolbarArrowMessage = WM_APP + 104;
 constexpr UINT kCaptureToolbarOcrMessage = WM_APP + 105;
+constexpr UINT kCaptureToolbarUndoArrowMessage = WM_APP + 106;
+constexpr UINT kCaptureToolbarRedoArrowMessage = WM_APP + 107;
 
 void InitializeCaptureToolbarOcrSupport();
 

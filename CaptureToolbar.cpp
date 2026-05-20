@@ -146,6 +146,16 @@ LRESULT CALLBACK ToolbarButtonProc(HWND hwnd, UINT message, WPARAM wparam, LPARA
                 }
                 return 0;
             }
+            if (wparam == 'Z')
+            {
+                PostOwnerMessageFromChild(hwnd, kCaptureToolbarUndoArrowMessage);
+                return 0;
+            }
+            if (wparam == 'Y')
+            {
+                PostOwnerMessageFromChild(hwnd, kCaptureToolbarRedoArrowMessage);
+                return 0;
+            }
         }
     }
 
@@ -243,6 +253,16 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 {
                     PostOwnerMessage(hwnd, kCaptureToolbarOcrMessage);
                 }
+                return 0;
+            }
+            if (wparam == 'Z')
+            {
+                PostOwnerMessage(hwnd, kCaptureToolbarUndoArrowMessage);
+                return 0;
+            }
+            if (wparam == 'Y')
+            {
+                PostOwnerMessage(hwnd, kCaptureToolbarRedoArrowMessage);
                 return 0;
             }
         }

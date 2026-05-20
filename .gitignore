@@ -4,6 +4,7 @@ out/
 PrtSc-*-win64.zip
 PrtSc-*-win32.zip
 assets/icon-concepts/
+assets/app-icon/PrtSc-social-preview.png
 
 .vs/
 *.user
@@ -11,3 +12,4 @@ assets/icon-concepts/
 *.vcxproj.user
 
 CMakeUserPresets.json
+AGENTS.md
