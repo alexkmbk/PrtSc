@@ -51,6 +51,33 @@ target_compile_definitions(PrtSc PRIVATE
     NOMINMAX
 )
 
+add_library(PrtScStartupMsix SHARED
+    PrtScStartupMsix.cpp
+)
+
+target_compile_features(PrtScStartupMsix PRIVATE cxx_std_23)
+
+target_link_libraries(PrtScStartupMsix PRIVATE
+    WindowsApp
+    RuntimeObject
+)
+
+if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+    set(PRTSC_WINDOWS_SDK_INCLUDE_ROOT
+        "C:/Program Files (x86)/Windows Kits/10/Include/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+    if(EXISTS "${PRTSC_WINDOWS_SDK_INCLUDE_ROOT}/cppwinrt")
+        target_include_directories(PrtScStartupMsix PRIVATE
+            "${PRTSC_WINDOWS_SDK_INCLUDE_ROOT}/cppwinrt")
+    endif()
+endif()
+
+target_compile_definitions(PrtScStartupMsix PRIVATE
+    UNICODE
+    _UNICODE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+)
+
 add_library(PrtScOcr SHARED
     PrtScOcr.cpp
 )

@@ -1,84 +1,84 @@
 #include "StartupManager.h"
 
-#include <string>
 #include <windows.h>
 
 namespace
 {
-constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-constexpr wchar_t kRunValueName[] = L"PrtSc";
+using GetCurrentPackageFullNameFn = LONG(WINAPI*)(UINT32*, PWSTR);
+using StartupIsSupportedFn = BOOL(WINAPI*)();
+using StartupIsEnabledFn = BOOL(WINAPI*)(BOOL*);
+using StartupSetEnabledFn = BOOL(WINAPI*)(BOOL);
 
-std::wstring GetCurrentExecutableCommand()
+constexpr wchar_t kStartupMsixDllName[] = L"PrtScStartupMsix.dll";
+
+bool IsPackaged()
 {
-    std::wstring path(MAX_PATH, L'\0');
-
-    for (;;)
-    {
-        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-        if (length == 0)
-        {
-            return {};
-        }
-
-        if (length < path.size() - 1)
-        {
-            path.resize(length);
-            break;
-        }
-
-        path.resize(path.size() * 2);
-    }
-
-    return L"\"" + path + L"\"";
-}
-}
-
-bool SetRunAtSystemStartup(bool enabled)
-{
-    HKEY runKey = nullptr;
-    const LSTATUS openStatus = RegCreateKeyExW(
-        HKEY_CURRENT_USER,
-        kRunKeyPath,
-        0,
-        nullptr,
-        REG_OPTION_NON_VOLATILE,
-        KEY_SET_VALUE,
-        nullptr,
-        &runKey,
-        nullptr);
-
-    if (openStatus != ERROR_SUCCESS)
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (kernel32 == nullptr)
     {
         return false;
     }
 
-    LSTATUS status = ERROR_SUCCESS;
-    if (enabled)
+    auto getCurrentPackageFullName =
+        reinterpret_cast<GetCurrentPackageFullNameFn>(GetProcAddress(kernel32, "GetCurrentPackageFullName"));
+    if (getCurrentPackageFullName == nullptr)
     {
-        const std::wstring command = GetCurrentExecutableCommand();
-        if (command.empty())
-        {
-            RegCloseKey(runKey);
-            return false;
-        }
-
-        status = RegSetValueExW(
-            runKey,
-            kRunValueName,
-            0,
-            REG_SZ,
-            reinterpret_cast<const BYTE*>(command.c_str()),
-            static_cast<DWORD>((command.size() + 1) * sizeof(wchar_t)));
-    }
-    else
-    {
-        status = RegDeleteValueW(runKey, kRunValueName);
-        if (status == ERROR_FILE_NOT_FOUND)
-        {
-            status = ERROR_SUCCESS;
-        }
+        return false;
     }
 
-    RegCloseKey(runKey);
-    return status == ERROR_SUCCESS;
+    UINT32 length = 0;
+    const LONG result = getCurrentPackageFullName(&length, nullptr);
+    return result == ERROR_INSUFFICIENT_BUFFER;
+}
+
+HMODULE GetStartupMsixModule()
+{
+    static HMODULE module = []()
+    {
+        if (!IsPackaged())
+        {
+            return static_cast<HMODULE>(nullptr);
+        }
+
+        return LoadLibraryW(kStartupMsixDllName);
+    }();
+
+    return module;
+}
+
+template <typename Function>
+Function GetStartupMsixFunction(const char* name)
+{
+    HMODULE module = GetStartupMsixModule();
+    if (module == nullptr)
+    {
+        return nullptr;
+    }
+
+    return reinterpret_cast<Function>(GetProcAddress(module, name));
+}
+}
+
+bool IsStartupManagementAvailable()
+{
+    auto isSupported = GetStartupMsixFunction<StartupIsSupportedFn>("PrtScStartupIsSupported");
+    return isSupported != nullptr && isSupported() != FALSE;
+}
+
+bool IsRunAtSystemStartupEnabled()
+{
+    auto isEnabled = GetStartupMsixFunction<StartupIsEnabledFn>("PrtScStartupIsEnabled");
+    if (isEnabled == nullptr)
+    {
+        return false;
+    }
+
+    BOOL enabled = FALSE;
+    return isEnabled(&enabled) != FALSE && enabled != FALSE;
+}
+
+bool SetRunAtSystemStartup(bool enabled)
+{
+    auto setEnabled = GetStartupMsixFunction<StartupSetEnabledFn>("PrtScStartupSetEnabled");
+    return setEnabled != nullptr && setEnabled(enabled ? TRUE : FALSE) != FALSE;
 }

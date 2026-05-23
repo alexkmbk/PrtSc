@@ -21,6 +21,7 @@ struct DialogState
     HWND editHotkey = nullptr;
     HWND runAtStartupCheckbox = nullptr;
     WNDPROC originalEditProc = nullptr;
+    bool canManageStartup = false;
     bool accepted = false;
     bool closed = false;
 };
@@ -265,6 +266,7 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     {
         auto* state = reinterpret_cast<DialogState*>(reinterpret_cast<LPCREATESTRUCTW>(lparam)->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        state->canManageStartup = IsStartupManagementAvailable();
 
         const int margin = ScaleForDpi(hwnd, 22);
         const int labelTop = ScaleForDpi(hwnd, 22);
@@ -329,8 +331,9 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         SendMessageW(
             state->runAtStartupCheckbox,
             BM_SETCHECK,
-            Settings::Instance().RunAtSystemStartup() ? BST_CHECKED : BST_UNCHECKED,
+            state->canManageStartup && IsRunAtSystemStartupEnabled() ? BST_CHECKED : BST_UNCHECKED,
             0);
+        EnableWindow(state->runAtStartupCheckbox, state->canManageStartup ? TRUE : FALSE);
 
         HWND okButton = CreateWindowExW(
             0,
@@ -376,11 +379,16 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             if (state != nullptr)
             {
                 Settings::Instance().SetScreenshotHotkey(GetWindowTextValue(state->editHotkey));
-                const bool runAtStartup =
-                    SendMessageW(state->runAtStartupCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                Settings::Instance().SetRunAtSystemStartup(runAtStartup);
+                if (state->canManageStartup)
+                {
+                    const bool runAtStartup =
+                        SendMessageW(state->runAtStartupCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                    if (SetRunAtSystemStartup(runAtStartup))
+                    {
+                        Settings::Instance().SetRunAtSystemStartup(runAtStartup);
+                    }
+                }
                 Settings::Instance().Save();
-                SetRunAtSystemStartup(runAtStartup);
             }
 
             CloseDialog(hwnd, true);
