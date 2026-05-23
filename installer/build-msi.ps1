@@ -15,7 +15,7 @@ $installerDir = Split-Path -Parent $PSCommandPath
 $projectDir = Split-Path -Parent $installerDir
 
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = Join-Path $projectDir 'build-msi-x64'
+    $BuildDir = Join-Path $projectDir 'build'
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
@@ -37,10 +37,14 @@ $productVersion = $Matches[1]
 Write-Host 'Stopping running PrtSc processes...'
 Get-Process PrtSc -ErrorAction SilentlyContinue | Stop-Process -Force
 
-Write-Host "Configuring x64 build in '$BuildDir'..."
-& cmake -S $projectDir -B $BuildDir -A x64
-if ($LASTEXITCODE -ne 0) {
-    throw "cmake configure failed with exit code $LASTEXITCODE."
+if (Test-Path -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt')) {
+    Write-Host "Using existing CMake build directory '$BuildDir'..."
+} else {
+    Write-Host "Configuring x64 build in '$BuildDir'..."
+    & cmake -S $projectDir -B $BuildDir -A x64
+    if ($LASTEXITCODE -ne 0) {
+        throw "cmake configure failed with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Building PrtSc $Configuration x64..."
