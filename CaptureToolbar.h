@@ -10,6 +10,7 @@ constexpr UINT kCaptureToolbarArrowMessage = WM_APP + 104;
 constexpr UINT kCaptureToolbarOcrMessage = WM_APP + 105;
 constexpr UINT kCaptureToolbarUndoAnnotationMessage = WM_APP + 106;
 constexpr UINT kCaptureToolbarRedoAnnotationMessage = WM_APP + 107;
+constexpr UINT kCaptureToolbarTextMessage = WM_APP + 108;
 
 void InitializeCaptureToolbarOcrSupport();
 

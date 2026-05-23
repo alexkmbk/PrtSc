@@ -25,6 +25,7 @@ constexpr int kCancelButtonId = 3003;
 constexpr int kColorButtonId = 3004;
 constexpr int kArrowButtonId = 3005;
 constexpr int kOcrButtonId = 3006;
+constexpr int kTextButtonId = 3007;
 
 bool gIsOcrSupported = false;
 
@@ -42,7 +43,7 @@ bool IsOcrSupported();
 
 int GetToolbarWidth()
 {
-    const int buttonCount = IsOcrSupported() ? 6 : 5;
+    const int buttonCount = IsOcrSupported() ? 7 : 6;
     return kButtonLeft + kButtonRight + (buttonCount * kButtonWidth) + ((buttonCount - 3) * kButtonGap) +
         (2 * kSeparatorSpace);
 }
@@ -157,6 +158,11 @@ LRESULT CALLBACK ToolbarButtonProc(HWND hwnd, UINT message, WPARAM wparam, LPARA
                 }
                 return 0;
             }
+            if (wparam == 'T')
+            {
+                PostOwnerMessageFromChild(hwnd, kCaptureToolbarTextMessage);
+                return 0;
+            }
             if (wparam == 'Z')
             {
                 PostOwnerMessageFromChild(hwnd, kCaptureToolbarUndoAnnotationMessage);
@@ -241,6 +247,8 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         left += kButtonWidth + kButtonGap;
         HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
         left += kButtonWidth + kButtonGap;
+        CreateToolbarButton(hwnd, kTextButtonId, L"Text", left);
+        left += kButtonWidth + kButtonGap;
         CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
         left += kSeparatorSpace - kButtonGap;
 
@@ -287,6 +295,11 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 {
                     PostOwnerMessage(hwnd, kCaptureToolbarOcrMessage);
                 }
+                return 0;
+            }
+            if (wparam == 'T')
+            {
+                PostOwnerMessage(hwnd, kCaptureToolbarTextMessage);
                 return 0;
             }
             if (wparam == 'Z')
@@ -347,6 +360,13 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             if (HWND owner = GetWindow(hwnd, GW_OWNER))
             {
                 PostMessageW(owner, kCaptureToolbarArrowMessage, 0, 0);
+            }
+            return 0;
+
+        case kTextButtonId:
+            if (HWND owner = GetWindow(hwnd, GW_OWNER))
+            {
+                PostMessageW(owner, kCaptureToolbarTextMessage, 0, 0);
             }
             return 0;
 

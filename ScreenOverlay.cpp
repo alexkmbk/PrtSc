@@ -6,12 +6,15 @@
 #include "Settings.h"
 
 #include <algorithm>
+#include <cwctype>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <objidl.h>
 #include <gdiplus.h>
 #include <shlobj.h>
@@ -24,6 +27,15 @@ constexpr BYTE kOverlayAlpha = 110;
 constexpr uint32_t kDimPixel = (static_cast<uint32_t>(kOverlayAlpha) << 24);
 constexpr uint32_t kBorderPixel = 0xFFFFFFFF;
 constexpr ULONGLONG kRenderThrottleMilliseconds = 16;
+constexpr UINT kTextEditCommitMessage = WM_APP + 200;
+constexpr UINT kTextEditCancelMessage = WM_APP + 201;
+constexpr UINT_PTR kTextEditSubclassId = 1;
+constexpr int kTextEditFontSizePixels = 24;
+constexpr int kTextEditMinimumWidth = 160;
+constexpr int kTextEditMinimumHeight = 56;
+constexpr int kTextEditMaximumWidth = 360;
+constexpr int kTextEditMaximumHeight = 140;
+constexpr COLORREF kTextEditBackgroundColor = RGB(255, 255, 255);
 
 enum class SelectionMode
 {
@@ -31,6 +43,7 @@ enum class SelectionMode
     Create,
     Move,
     Arrow,
+    Text,
 };
 
 struct OverlayState
@@ -40,6 +53,21 @@ struct OverlayState
         if (renderBitmap != nullptr)
         {
             DeleteObject(renderBitmap);
+        }
+
+        if (textEditHwnd != nullptr && IsWindow(textEditHwnd))
+        {
+            DestroyWindow(textEditHwnd);
+        }
+
+        if (textEditFont != nullptr)
+        {
+            DeleteObject(textEditFont);
+        }
+
+        if (textEditBrush != nullptr)
+        {
+            DeleteObject(textEditBrush);
         }
 
         if (hasGdiplus)
@@ -65,10 +93,15 @@ struct OverlayState
     std::vector<AnnotationObject> annotationObjects;
     std::vector<AnnotationObject> previousAnnotationObjects;
     ArrowAnnotation previewArrow{};
+    HWND textEditHwnd = nullptr;
+    HFONT textEditFont = nullptr;
+    HBRUSH textEditBrush = nullptr;
+    POINT textEditPosition{};
     COLORREF annotationColor = RGB(255, 0, 0);
     int currentAnnotationIndex = -1;
     SelectionMode mode = SelectionMode::None;
     bool isArrowToolActive = false;
+    bool isTextToolActive = false;
     bool hasPreviewArrow = false;
     bool hasSelection = false;
     bool isMouseDown = false;
@@ -125,6 +158,33 @@ bool IsCtrlPressed()
 void ResetAnnotationUndoState(OverlayState& state)
 {
     state.currentAnnotationIndex = GetLastVisibleAnnotationIndex(state.annotationObjects);
+}
+
+bool HasVisibleText(const std::wstring& text)
+{
+    return std::any_of(
+        text.begin(),
+        text.end(),
+        [](wchar_t ch)
+        {
+            return std::iswspace(ch) == 0;
+        });
+}
+
+template <typename Annotation>
+void AddAnnotation(OverlayState& state, Annotation annotation)
+{
+    state.annotationObjects.erase(
+        std::remove_if(
+            state.annotationObjects.begin(),
+            state.annotationObjects.end(),
+            [](const AnnotationObject& annotationObject)
+            {
+                return !annotationObject.isVisible;
+            }),
+        state.annotationObjects.end());
+    state.annotationObjects.push_back({std::move(annotation)});
+    ResetAnnotationUndoState(state);
 }
 
 LONG ClampLong(LONG value, LONG low, LONG high)
@@ -349,6 +409,187 @@ void ShowToolbarForSelection(HWND hwnd, OverlayState& state)
     POINT anchorPoint{state.selection.right, state.selection.bottom};
     ClientToScreen(hwnd, &anchorPoint);
     state.toolbar.Show(hwnd, anchorPoint, state.annotationColor);
+}
+
+LRESULT CALLBACK TextEditProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR)
+{
+    HWND owner = GetWindow(hwnd, GW_OWNER);
+
+    if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN)
+    {
+        if (wparam == VK_ESCAPE)
+        {
+            if (owner != nullptr)
+            {
+                PostMessageW(owner, kTextEditCancelMessage, 0, 0);
+            }
+            return 0;
+        }
+
+        if (wparam == VK_RETURN && IsCtrlPressed())
+        {
+            if (owner != nullptr)
+            {
+                PostMessageW(owner, kTextEditCommitMessage, 0, 0);
+            }
+            return 0;
+        }
+    }
+    else if (message == WM_NCDESTROY)
+    {
+        RemoveWindowSubclass(hwnd, TextEditProc, kTextEditSubclassId);
+    }
+
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+}
+
+RECT BuildTextEditClientRect(const OverlayState& state, POINT point)
+{
+    const int selectionWidth = state.selection.right - state.selection.left;
+    const int selectionHeight = state.selection.bottom - state.selection.top;
+    const int preferredWidth = std::min(kTextEditMaximumWidth, std::max(kTextEditMinimumWidth, selectionWidth / 2));
+    const int preferredHeight =
+        std::min(kTextEditMaximumHeight, std::max(kTextEditMinimumHeight, selectionHeight / 3));
+    const int width = std::min(preferredWidth, selectionWidth);
+    const int height = std::min(preferredHeight, selectionHeight);
+    const LONG left = ClampLong(point.x, state.selection.left, state.selection.right - width);
+    const LONG top = ClampLong(point.y, state.selection.top, state.selection.bottom - height);
+
+    return {
+        left,
+        top,
+        left + width,
+        top + height,
+    };
+}
+
+void CloseTextEdit(OverlayState& state)
+{
+    HWND textEdit = state.textEditHwnd;
+    state.textEditHwnd = nullptr;
+    if (textEdit != nullptr && IsWindow(textEdit))
+    {
+        DestroyWindow(textEdit);
+    }
+
+    if (state.textEditFont != nullptr)
+    {
+        DeleteObject(state.textEditFont);
+        state.textEditFont = nullptr;
+    }
+
+    if (state.textEditBrush != nullptr)
+    {
+        DeleteObject(state.textEditBrush);
+        state.textEditBrush = nullptr;
+    }
+}
+
+std::wstring GetWindowTextString(HWND hwnd)
+{
+    const int length = GetWindowTextLengthW(hwnd);
+    if (length <= 0)
+    {
+        return {};
+    }
+
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(hwnd, text.data(), length + 1);
+    text.resize(static_cast<size_t>(std::max(copied, 0)));
+    return text;
+}
+
+void CommitTextEdit(HWND hwnd, OverlayState& state)
+{
+    HWND textEdit = state.textEditHwnd;
+    if (textEdit == nullptr || !IsWindow(textEdit))
+    {
+        return;
+    }
+
+    std::wstring text = GetWindowTextString(textEdit);
+    const POINT position = state.textEditPosition;
+    CloseTextEdit(state);
+    state.isTextToolActive = false;
+    state.mode = SelectionMode::None;
+
+    if (HasVisibleText(text))
+    {
+        AddAnnotation(state, TextAnnotation{position, std::move(text), state.annotationColor});
+    }
+
+    RenderOverlay(hwnd, state);
+    if (state.hasSelection)
+    {
+        ShowToolbarForSelection(hwnd, state);
+    }
+}
+
+void CancelTextEdit(HWND hwnd, OverlayState& state)
+{
+    CloseTextEdit(state);
+    state.isTextToolActive = false;
+    state.mode = SelectionMode::None;
+    RenderOverlay(hwnd, state);
+    if (state.hasSelection)
+    {
+        ShowToolbarForSelection(hwnd, state);
+    }
+}
+
+void StartTextEdit(HWND hwnd, OverlayState& state, POINT point)
+{
+    CloseTextEdit(state);
+
+    RECT editClientRect = BuildTextEditClientRect(state, point);
+    POINT editScreenPoint{editClientRect.left, editClientRect.top};
+    ClientToScreen(hwnd, &editScreenPoint);
+
+    HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd, GWLP_HINSTANCE));
+    state.textEditHwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        L"EDIT",
+        L"",
+        WS_POPUP | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+        editScreenPoint.x,
+        editScreenPoint.y,
+        editClientRect.right - editClientRect.left,
+        editClientRect.bottom - editClientRect.top,
+        hwnd,
+        nullptr,
+        instance,
+        nullptr);
+    if (state.textEditHwnd == nullptr)
+    {
+        state.isTextToolActive = false;
+        ShowToolbarForSelection(hwnd, state);
+        return;
+    }
+
+    state.textEditPosition = {editClientRect.left, editClientRect.top};
+    state.textEditFont = CreateFontW(
+        -kTextEditFontSizePixels,
+        0,
+        0,
+        0,
+        FW_NORMAL,
+        FALSE,
+        FALSE,
+        FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Segoe UI");
+    if (state.textEditFont != nullptr)
+    {
+        SendMessageW(state.textEditHwnd, WM_SETFONT, reinterpret_cast<WPARAM>(state.textEditFont), TRUE);
+    }
+
+    state.textEditBrush = CreateSolidBrush(kTextEditBackgroundColor);
+    SetWindowSubclass(state.textEditHwnd, TextEditProc, kTextEditSubclassId, 0);
+    SetFocus(state.textEditHwnd);
 }
 
 POINT ClientPointToScreen(HWND hwnd, POINT point)
@@ -1002,6 +1243,20 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
     switch (message)
     {
+    case kTextEditCommitMessage:
+        if (state != nullptr)
+        {
+            CommitTextEdit(hwnd, *state);
+        }
+        return 0;
+
+    case kTextEditCancelMessage:
+        if (state != nullptr)
+        {
+            CancelTextEdit(hwnd, *state);
+        }
+        return 0;
+
     case kCaptureToolbarCopyMessage:
         if (state != nullptr)
         {
@@ -1049,8 +1304,22 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         {
             state->toolbar.Hide();
             state->isArrowToolActive = true;
+            state->isTextToolActive = false;
+            CloseTextEdit(*state);
             state->mode = SelectionMode::None;
             SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        }
+        return 0;
+
+    case kCaptureToolbarTextMessage:
+        if (state != nullptr && state->hasSelection)
+        {
+            state->toolbar.Hide();
+            state->isTextToolActive = true;
+            state->isArrowToolActive = false;
+            state->hasPreviewArrow = false;
+            state->mode = SelectionMode::Text;
+            SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
         }
         return 0;
 
@@ -1080,6 +1349,19 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 SaveSelectionToFileAndClose(hwnd, *state);
                 return 0;
             }
+            if (wparam == 'T')
+            {
+                if (state->hasSelection)
+                {
+                    state->toolbar.Hide();
+                    state->isTextToolActive = true;
+                    state->isArrowToolActive = false;
+                    state->hasPreviewArrow = false;
+                    state->mode = SelectionMode::Text;
+                    SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+                }
+                return 0;
+            }
             if (wparam == 'Z')
             {
                 UndoAnnotationAndRefresh(hwnd, *state);
@@ -1103,6 +1385,30 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         {
             const POINT point = GetClientPoint(lparam);
 
+            if (state->textEditHwnd != nullptr && IsWindow(state->textEditHwnd))
+            {
+                CommitTextEdit(hwnd, *state);
+                return 0;
+            }
+
+            if (state->isTextToolActive && state->hasSelection)
+            {
+                state->toolbar.Hide();
+                state->hasPreviewArrow = false;
+                if (IsPointInsideRect(point, state->selection))
+                {
+                    state->mode = SelectionMode::Text;
+                    StartTextEdit(hwnd, *state, point);
+                }
+                else
+                {
+                    state->isTextToolActive = false;
+                    state->mode = SelectionMode::None;
+                    ShowToolbarForSelection(hwnd, *state);
+                }
+                return 0;
+            }
+
             SetCapture(hwnd);
             SetFocus(hwnd);
             state->isMouseDown = true;
@@ -1124,6 +1430,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     state->isMouseDown = false;
                     state->isDragging = false;
                     state->mode = SelectionMode::None;
+                    ShowToolbarForSelection(hwnd, *state);
                     return 0;
                 }
             }
@@ -1186,13 +1493,20 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         {
             const POINT current = GetClientPoint(lparam);
             const bool isInsideSelection = state->hasSelection && IsPointInsideRect(current, state->selection);
-            SetCursor(LoadCursorW(nullptr, isInsideSelection ? IDC_SIZEALL : IDC_CROSS));
+            const wchar_t* cursorId =
+                (state->isTextToolActive && isInsideSelection) ? IDC_IBEAM : (isInsideSelection ? IDC_SIZEALL : IDC_CROSS);
+            SetCursor(LoadCursorW(nullptr, cursorId));
         }
         return 0;
 
     case WM_LBUTTONUP:
         if (state != nullptr)
         {
+            if (!state->isMouseDown)
+            {
+                return 0;
+            }
+
             const bool wasDragging = state->isDragging;
             const bool wasDrawingArrow = state->mode == SelectionMode::Arrow;
             const bool hadPreviewArrow = state->hasPreviewArrow;
@@ -1221,17 +1535,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 state->hasSelection = IsRectVisible(state->selection);
                 if (wasDrawingArrow && hadPreviewArrow)
                 {
-                    state->annotationObjects.erase(
-                        std::remove_if(
-                            state->annotationObjects.begin(),
-                            state->annotationObjects.end(),
-                            [](const AnnotationObject& annotationObject)
-                            {
-                                return !annotationObject.isVisible;
-                            }),
-                        state->annotationObjects.end());
-                    state->annotationObjects.push_back({completedArrow});
-                    ResetAnnotationUndoState(*state);
+                    AddAnnotation(*state, completedArrow);
                     state->hasPreviewArrow = false;
                 }
                 RenderOverlay(hwnd, *state);
@@ -1241,10 +1545,21 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->isMouseDown = false;
             state->isDragging = false;
             state->isArrowToolActive = false;
+            state->isTextToolActive = false;
             state->hasPreviewArrow = false;
             state->mode = SelectionMode::None;
         }
         return 0;
+
+    case WM_CTLCOLOREDIT:
+        if (state != nullptr && reinterpret_cast<HWND>(lparam) == state->textEditHwnd)
+        {
+            HDC editDc = reinterpret_cast<HDC>(wparam);
+            SetTextColor(editDc, state->annotationColor);
+            SetBkColor(editDc, kTextEditBackgroundColor);
+            return reinterpret_cast<LRESULT>(state->textEditBrush);
+        }
+        break;
 
     case WM_CAPTURECHANGED:
         if (state != nullptr)
@@ -1265,7 +1580,9 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             ScreenToClient(hwnd, &cursor);
 
             const bool isInsideSelection = state->hasSelection && IsPointInsideRect(cursor, state->selection);
-            SetCursor(LoadCursorW(nullptr, isInsideSelection ? IDC_SIZEALL : IDC_CROSS));
+            const wchar_t* cursorId =
+                (state->isTextToolActive && isInsideSelection) ? IDC_IBEAM : (isInsideSelection ? IDC_SIZEALL : IDC_CROSS);
+            SetCursor(LoadCursorW(nullptr, cursorId));
         }
         else
         {

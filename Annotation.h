@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ArrowAnnotation.h"
+#include "TextAnnotation.h"
 
 #include <vector>
 #include <variant>
@@ -11,7 +12,7 @@ namespace Gdiplus
 class Graphics;
 }
 
-using AnnotationValue = std::variant<ArrowAnnotation>;
+using AnnotationValue = std::variant<ArrowAnnotation, TextAnnotation>;
 
 struct AnnotationObject
 {

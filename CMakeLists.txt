@@ -30,6 +30,8 @@ add_executable(PrtSc WIN32
     StartupManager.h
     SysTrayIcon.cpp
     SysTrayIcon.h
+    TextAnnotation.cpp
+    TextAnnotation.h
 )
 
 target_compile_features(PrtSc PRIVATE cxx_std_23)

@@ -27,6 +27,10 @@ void MoveAnnotation(AnnotationObject& annotationObject, LONG dx, LONG dy)
             {
                 MoveArrow(annotation, dx, dy);
             }
+            else if constexpr (std::is_same_v<Annotation, TextAnnotation>)
+            {
+                MoveTextAnnotation(annotation, dx, dy);
+            }
         },
         annotationObject.value);
 }
@@ -56,6 +60,10 @@ void DrawAnnotation(Gdiplus::Graphics& graphics, const AnnotationObject& annotat
             if constexpr (std::is_same_v<Annotation, ArrowAnnotation>)
             {
                 DrawArrow(graphics, annotation, offsetX, offsetY);
+            }
+            else if constexpr (std::is_same_v<Annotation, TextAnnotation>)
+            {
+                DrawTextAnnotation(graphics, annotation, offsetX, offsetY);
             }
         },
         annotationObject.value);
