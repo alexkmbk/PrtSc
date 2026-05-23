@@ -1,20 +1,12 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product
-      Id="*"
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
       Name="PrtSc"
       Language="1033"
       Version="$(var.ProductVersion)"
       Manufacturer="PrtSc"
-      UpgradeCode="5AE96A1D-4644-40D2-90FA-E6E4EED7D147">
-
-    <Package
-        InstallerVersion="500"
-        Compressed="yes"
-        InstallScope="perUser"
-        InstallPrivileges="limited"
-        Platform="x64"
-        Description="PrtSc screenshot tool" />
+      UpgradeCode="5AE96A1D-4644-40D2-90FA-E6E4EED7D147"
+      Scope="perUser">
+    <SummaryInformation Description="PrtSc screenshot tool" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of PrtSc is already installed." />
     <MediaTemplate EmbedCab="yes" />
@@ -22,79 +14,18 @@
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
     <Property Id="ARPPRODUCTICON" Value="PrtScIcon" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch PrtSc" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(var.ProjectDir)\installer\assets\banner-blank-8bit.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(var.ProjectDir)\installer\assets\dialog-blank-8bit.bmp" />
 
     <CustomAction
         Id="LaunchPrtSc"
-        FileKey="PrtScExe"
         ExeCommand=""
         Execute="immediate"
         Impersonate="yes"
-        Return="asyncNoWait" />
+        Return="asyncNoWait"
+        FileRef="PrtScExe" />
 
     <Icon Id="PrtScIcon" SourceFile="$(var.ProjectDir)\assets\app-icon\PrtSc.ico" />
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="LocalAppDataFolder">
-        <Directory Id="LocalProgramsFolder" Name="Programs">
-          <Directory Id="INSTALLFOLDER" Name="PrtSc">
-            <Component Id="PrtScExeComponent" Guid="B89310D0-9015-48AF-86F6-5AB8B1E292DA" Win64="yes">
-              <File Id="PrtScExe" Source="$(var.SourceDir)\PrtSc.exe" />
-              <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
-              <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
-              <RegistryValue
-                  Root="HKCU"
-                  Key="Software\PrtSc"
-                  Name="InstalledExe"
-                  Type="integer"
-                  Value="1"
-                  KeyPath="yes" />
-            </Component>
-
-            <Component Id="PrtScOcrComponent" Guid="6476C692-B58E-429E-ACD7-BB21BE62097C" Win64="yes">
-              <File Id="PrtScOcrDll" Source="$(var.SourceDir)\PrtScOcr.dll" />
-              <RegistryValue
-                  Root="HKCU"
-                  Key="Software\PrtSc"
-                  Name="InstalledOcr"
-                  Type="integer"
-                  Value="1"
-                  KeyPath="yes" />
-            </Component>
-
-            <Component Id="StartupComponent" Guid="F2D6E237-E79F-43B1-ABE9-FC4B27BAC938" Win64="yes">
-              <RegistryValue
-                  Root="HKCU"
-                  Key="Software\Microsoft\Windows\CurrentVersion\Run"
-                  Name="PrtSc"
-                  Type="string"
-                  Value="&quot;[INSTALLFOLDER]PrtSc.exe&quot;"
-                  KeyPath="yes" />
-            </Component>
-          </Directory>
-        </Directory>
-      </Directory>
-
-      <Directory Id="ProgramMenuFolder">
-        <Directory Id="ApplicationProgramsFolder" Name="PrtSc">
-          <Component Id="StartMenuShortcutComponent" Guid="CF0C2E11-C9DA-4B76-94B2-9D15F7FEB568" Win64="yes">
-            <Shortcut
-                Id="ApplicationStartMenuShortcut"
-                Name="PrtSc"
-                Description="Launch PrtSc"
-                Target="[INSTALLFOLDER]PrtSc.exe"
-                WorkingDirectory="INSTALLFOLDER"
-                Icon="PrtScIcon" />
-            <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
-            <RegistryValue
-                Root="HKCU"
-                Key="Software\PrtSc"
-                Name="StartMenuShortcut"
-                Type="integer"
-                Value="1"
-                KeyPath="yes" />
-          </Component>
-        </Directory>
-      </Directory>
-    </Directory>
 
     <Feature Id="MainFeature" Title="PrtSc" Level="1">
       <ComponentRef Id="PrtScExeComponent" />
@@ -112,12 +43,75 @@
         Id="ADDLOCAL"
         Value="MainFeature,StartupFeature"
         Before="CostFinalize"
-        Sequence="both">PRTSC_STARTUP = "1"</SetProperty>
+        Sequence="both"
+        Condition="PRTSC_STARTUP = &quot;1&quot;" />
 
     <InstallExecuteSequence>
-      <Custom Action="LaunchPrtSc" After="InstallFinalize">LAUNCH_PRTSC = "1"</Custom>
+      <Custom Action="LaunchPrtSc" After="InstallFinalize" Condition="LAUNCH_PRTSC = &quot;1&quot;" />
     </InstallExecuteSequence>
-  </Product>
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="PrtSc">
+          <Component Id="PrtScExeComponent" Guid="B89310D0-9015-48AF-86F6-5AB8B1E292DA" Bitness="always64">
+            <File Id="PrtScExe" Source="$(var.SourceDir)\PrtSc.exe" />
+            <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+            <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+            <RegistryValue
+                Root="HKCU"
+                Key="Software\PrtSc"
+                Name="InstalledExe"
+                Type="integer"
+                Value="1"
+                KeyPath="yes" />
+          </Component>
+
+          <Component Id="PrtScOcrComponent" Guid="6476C692-B58E-429E-ACD7-BB21BE62097C" Bitness="always64">
+            <File Id="PrtScOcrDll" Source="$(var.SourceDir)\PrtScOcr.dll" />
+            <RegistryValue
+                Root="HKCU"
+                Key="Software\PrtSc"
+                Name="InstalledOcr"
+                Type="integer"
+                Value="1"
+                KeyPath="yes" />
+          </Component>
+
+          <Component Id="StartupComponent" Guid="F2D6E237-E79F-43B1-ABE9-FC4B27BAC938" Bitness="always64">
+            <RegistryValue
+                Root="HKCU"
+                Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                Name="PrtSc"
+                Type="string"
+                Value="&quot;[INSTALLFOLDER]PrtSc.exe&quot;"
+                KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="PrtSc">
+        <Component Id="StartMenuShortcutComponent" Guid="CF0C2E11-C9DA-4B76-94B2-9D15F7FEB568" Bitness="always64">
+          <Shortcut
+              Id="ApplicationStartMenuShortcut"
+              Name="PrtSc"
+              Description="Launch PrtSc"
+              Target="[INSTALLFOLDER]PrtSc.exe"
+              WorkingDirectory="INSTALLFOLDER"
+              Icon="PrtScIcon" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue
+              Root="HKCU"
+              Key="Software\PrtSc"
+              Name="StartMenuShortcut"
+              Type="integer"
+              Value="1"
+              KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
 
   <Fragment>
     <UI Id="PrtScUI_InstallDir">
@@ -152,41 +146,41 @@
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
-          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
         </Control>
       </Dialog>
 
-      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction" Value="WixUIValidatePath" Order="3">1</Publish>
-      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog" Value="InvalidDirDlg" Order="4"><![CDATA[NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID<>"1"]]></Publish>
+      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction" Value="WixUIValidatePath_$(sys.BUILDARCHSHORT)" Order="3" />
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog" Value="InvalidDirDlg" Order="4" Condition="NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
 
-      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPrtSc" Order="1">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1</Publish>
-      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPrtSc" Order="1" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg">NOT Installed</Publish>
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
 
-      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="WixUIValidatePath" Order="2">NOT WIXUI_DONTVALIDATEPATH</Publish>
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog" Value="InvalidDirDlg" Order="3"><![CDATA[NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID<>"1"]]></Publish>
-      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="StartupOptionsDlg" Order="4">WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID="1"</Publish>
-      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
-      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction" Value="WixUIValidatePath_$(sys.BUILDARCHSHORT)" Order="2" Condition="NOT WIXUI_DONTVALIDATEPATH" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog" Value="InvalidDirDlg" Order="3" Condition="NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;" />
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog" Value="StartupOptionsDlg" Order="4" Condition="WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID=&quot;1&quot;" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog" Value="BrowseDlg" Order="2" />
 
-      <Publish Dialog="StartupOptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg">1</Publish>
-      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="AddLocal" Value="StartupFeature" Order="1">PRTSC_STARTUP = "1"</Publish>
-      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="Remove" Value="StartupFeature" Order="2">PRTSC_STARTUP &lt;&gt; "1"</Publish>
-      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="StartupOptionsDlg" Control="Back" Event="NewDialog" Value="InstallDirDlg" />
+      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="AddLocal" Value="StartupFeature" Order="1" Condition="PRTSC_STARTUP = &quot;1&quot;" />
+      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="Remove" Value="StartupFeature" Order="2" Condition="PRTSC_STARTUP &lt;&gt; &quot;1&quot;" />
+      <Publish Dialog="StartupOptionsDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" />
 
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="StartupOptionsDlg" Order="1">NOT Installed</Publish>
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH</Publish>
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">Installed AND PATCH</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="StartupOptionsDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" Condition="Installed AND PATCH" />
 
-      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
 
-      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
-      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
-      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
 
       <Property Id="ARPNOMODIFY" Value="1" />
     </UI>

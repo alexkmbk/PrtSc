@@ -5,7 +5,7 @@ param(
 
     [string]$BuildDir = '',
     [string]$OutputDir = '',
-    [string]$WixBin = 'C:\Program Files (x86)\WiX Toolset v3.11\bin'
+    [string]$WixBin = 'C:\Program Files\WiX Toolset v7.0\bin'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,15 +22,9 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
     $OutputDir = Join-Path $projectDir 'out'
 }
 
-$candle = Join-Path $WixBin 'candle.exe'
-$light = Join-Path $WixBin 'light.exe'
-
-if (-not (Test-Path -LiteralPath $candle)) {
-    throw "candle.exe was not found at '$candle'. Install WiX Toolset v3.11 or pass -WixBin."
-}
-
-if (-not (Test-Path -LiteralPath $light)) {
-    throw "light.exe was not found at '$light'. Install WiX Toolset v3.11 or pass -WixBin."
+$wix = Join-Path $WixBin 'wix.exe'
+if (-not (Test-Path -LiteralPath $wix)) {
+    throw "wix.exe was not found at '$wix'. Install WiX Toolset v7 or pass -WixBin."
 }
 
 $cmakeLists = Get-Content -LiteralPath (Join-Path $projectDir 'CMakeLists.txt') -Raw
@@ -72,32 +66,23 @@ $objDir = Join-Path $msiDir 'obj'
 New-Item -ItemType Directory -Force -Path $objDir | Out-Null
 
 $wxsPath = Join-Path $installerDir 'PrtSc.wxs'
-$wixObj = Join-Path $objDir 'PrtSc.wixobj'
 $msiPath = Join-Path $msiDir "PrtSc-$productVersion-x64.msi"
+$pdbPath = Join-Path $msiDir "PrtSc-$productVersion-x64.wixpdb"
 
-Write-Host "Compiling WiX source..."
-& $candle `
-    -nologo `
+Write-Host 'Building MSI with WiX v7...'
+& $wix build `
     -arch x64 `
-    "-dProjectDir=$projectDir" `
-    "-dSourceDir=$sourceDir" `
-    "-dProductVersion=$productVersion" `
-    -out $wixObj `
+    -ext WixToolset.UI.wixext `
+    -culture en-us `
+    -d "ProjectDir=$projectDir" `
+    -d "SourceDir=$sourceDir" `
+    -d "ProductVersion=$productVersion" `
+    -intermediatefolder $objDir `
+    -pdb $pdbPath `
+    -out $msiPath `
     $wxsPath
 if ($LASTEXITCODE -ne 0) {
-    throw "WiX candle failed with exit code $LASTEXITCODE."
-}
-
-Write-Host "Linking MSI..."
-& $light `
-    -nologo `
-    -ext WixUIExtension `
-    -cultures:en-us `
-    -sice:ICE91 `
-    -out $msiPath `
-    $wixObj
-if ($LASTEXITCODE -ne 0) {
-    throw "WiX light failed with exit code $LASTEXITCODE."
+    throw "WiX build failed with exit code $LASTEXITCODE."
 }
 
 Write-Host "MSI package created: $msiPath"
