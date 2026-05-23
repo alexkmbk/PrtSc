@@ -8,8 +8,9 @@ namespace
 constexpr wchar_t kToolbarClassName[] = L"PrtScCaptureToolbar";
 constexpr int kToolbarHeight = 58;
 constexpr int kToolbarMargin = 8;
-constexpr int kButtonWidth = 104;
+constexpr int kCommandButtonWidth = 104;
 constexpr int kButtonHeight = 36;
+constexpr int kToolButtonWidth = kButtonHeight;
 constexpr int kButtonTop = 10;
 constexpr int kButtonLeft = 12;
 constexpr int kButtonRight = kButtonLeft;
@@ -44,9 +45,11 @@ bool IsOcrSupported();
 
 int GetToolbarWidth()
 {
-    const int buttonCount = IsOcrSupported() ? 7 : 6;
-    return kButtonLeft + kButtonRight + (buttonCount * kButtonWidth) + ((buttonCount - 3) * kButtonGap) +
-        (2 * kSeparatorSpace);
+    const int commandButtonCount = IsOcrSupported() ? 4 : 3;
+    constexpr int toolButtonCount = 3;
+    const int buttonCount = commandButtonCount + toolButtonCount;
+    return kButtonLeft + kButtonRight + (commandButtonCount * kCommandButtonWidth) +
+        (toolButtonCount * kToolButtonWidth) + ((buttonCount - 3) * kButtonGap) + (2 * kSeparatorSpace);
 }
 
 void PlaceBelowSelection(HWND hwnd, POINT anchor)
@@ -185,7 +188,7 @@ HWND CreateToolbarButton(
     int id,
     const wchar_t* text,
     int left,
-    int width = kButtonWidth,
+    int width = kCommandButtonWidth,
     DWORD buttonStyle = 0)
 {
     HWND button = CreateWindowExW(
@@ -286,19 +289,19 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
 
         HWND closeButton = CreateToolbarButton(hwnd, kCancelButtonId, L"Close", left);
         AddToolbarTooltip(tooltip, hwnd, closeButton, L"Close capture (Esc)");
-        left += kButtonWidth + kButtonGap;
+        left += kCommandButtonWidth + kButtonGap;
         CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
         left += kSeparatorSpace - kButtonGap;
 
-        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kToolButtonWidth, BS_OWNERDRAW);
         AddToolbarTooltip(tooltip, hwnd, colorButton, L"Choose annotation color");
-        left += kButtonWidth + kButtonGap;
-        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        left += kToolButtonWidth + kButtonGap;
+        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kToolButtonWidth, BS_OWNERDRAW);
         AddToolbarTooltip(tooltip, hwnd, arrowButton, L"Draw arrow");
-        left += kButtonWidth + kButtonGap;
-        HWND textButton = CreateToolbarButton(hwnd, kTextButtonId, L"Text", left);
+        left += kToolButtonWidth + kButtonGap;
+        HWND textButton = CreateToolbarButton(hwnd, kTextButtonId, L"", left, kToolButtonWidth, BS_OWNERDRAW);
         AddToolbarTooltip(tooltip, hwnd, textButton, L"Add text (Ctrl+T)");
-        left += kButtonWidth + kButtonGap;
+        left += kToolButtonWidth + kButtonGap;
         CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
         left += kSeparatorSpace - kButtonGap;
 
@@ -306,12 +309,12 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         {
             HWND ocrButton = CreateToolbarButton(hwnd, kOcrButtonId, L"OCR", left);
             AddToolbarTooltip(tooltip, hwnd, ocrButton, L"Recognize text to clipboard (Ctrl+O)");
-            left += kButtonWidth + kButtonGap;
+            left += kCommandButtonWidth + kButtonGap;
         }
 
         HWND saveButton = CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
         AddToolbarTooltip(tooltip, hwnd, saveButton, L"Save selected area (Ctrl+S)");
-        left += kButtonWidth + kButtonGap;
+        left += kCommandButtonWidth + kButtonGap;
         HWND copyButton = CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
         AddToolbarTooltip(tooltip, hwnd, copyButton, L"Copy selected area (Ctrl+C)");
 
@@ -433,7 +436,9 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     {
         const auto* drawItem = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
         auto* toolbar = GetToolbar(hwnd);
-        if (drawItem != nullptr && toolbar != nullptr && (drawItem->CtlID == kColorButtonId || drawItem->CtlID == kArrowButtonId))
+        if (drawItem != nullptr && toolbar != nullptr &&
+            (drawItem->CtlID == kColorButtonId || drawItem->CtlID == kArrowButtonId ||
+                drawItem->CtlID == kTextButtonId))
         {
             UINT buttonState = DFCS_BUTTONPUSH;
             if ((drawItem->itemState & ODS_SELECTED) != 0)
@@ -450,26 +455,24 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             if (drawItem->CtlID == kArrowButtonId)
             {
                 RECT content = drawItem->rcItem;
-                InflateRect(&content, -10, -8);
+                InflateRect(&content, -9, -9);
                 if ((drawItem->itemState & ODS_SELECTED) != 0)
                 {
                     OffsetRect(&content, 1, 1);
                 }
 
-                const int y = content.top + ((content.bottom - content.top) / 2);
-                const int arrowLength = MulDiv(content.right - content.left, 80, 100);
-                const int startX = content.left + ((content.right - content.left - arrowLength) / 2);
-                const int endX = startX + arrowLength;
-                const int headSize = 8;
+                const POINT head{content.left + 2, content.top + 2};
+                const POINT tail{content.right - 2, content.bottom - 2};
+                const int headSize = 6;
 
                 HPEN pen = CreatePen(PS_SOLID, 3, toolbar->Color());
                 HGDIOBJ oldPen = SelectObject(drawItem->hDC, pen);
 
-                MoveToEx(drawItem->hDC, endX, y, nullptr);
-                LineTo(drawItem->hDC, startX, y);
-                LineTo(drawItem->hDC, startX + headSize, y - headSize);
-                MoveToEx(drawItem->hDC, startX, y, nullptr);
-                LineTo(drawItem->hDC, startX + headSize, y + headSize);
+                MoveToEx(drawItem->hDC, tail.x, tail.y, nullptr);
+                LineTo(drawItem->hDC, head.x, head.y);
+                LineTo(drawItem->hDC, head.x + headSize, head.y);
+                MoveToEx(drawItem->hDC, head.x, head.y, nullptr);
+                LineTo(drawItem->hDC, head.x, head.y + headSize);
 
                 SelectObject(drawItem->hDC, oldPen);
                 DeleteObject(pen);
@@ -484,8 +487,59 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 return TRUE;
             }
 
+            if (drawItem->CtlID == kTextButtonId)
+            {
+                RECT content = drawItem->rcItem;
+                InflateRect(&content, -3, -2);
+                if ((drawItem->itemState & ODS_SELECTED) != 0)
+                {
+                    OffsetRect(&content, 1, 1);
+                }
+
+                HFONT font = CreateFontW(
+                    -24,
+                    0,
+                    0,
+                    0,
+                    FW_BOLD,
+                    FALSE,
+                    FALSE,
+                    FALSE,
+                    DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS,
+                    CLEARTYPE_QUALITY,
+                    VARIABLE_PITCH | FF_ROMAN,
+                    L"Times New Roman");
+                HGDIOBJ oldFont = font != nullptr ? SelectObject(drawItem->hDC, font) : nullptr;
+                const int oldBkMode = SetBkMode(drawItem->hDC, TRANSPARENT);
+                const COLORREF oldTextColor = SetTextColor(drawItem->hDC, toolbar->Color());
+
+                DrawTextW(drawItem->hDC, L"T", 1, &content, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                SetTextColor(drawItem->hDC, oldTextColor);
+                SetBkMode(drawItem->hDC, oldBkMode);
+                if (oldFont != nullptr)
+                {
+                    SelectObject(drawItem->hDC, oldFont);
+                }
+                if (font != nullptr)
+                {
+                    DeleteObject(font);
+                }
+
+                if ((drawItem->itemState & ODS_FOCUS) != 0)
+                {
+                    RECT focusRect = drawItem->rcItem;
+                    InflateRect(&focusRect, -3, -3);
+                    DrawFocusRect(drawItem->hDC, &focusRect);
+                }
+
+                return TRUE;
+            }
+
             RECT swatch = drawItem->rcItem;
-            InflateRect(&swatch, -8, -7);
+            InflateRect(&swatch, -4, -4);
             if ((drawItem->itemState & ODS_SELECTED) != 0)
             {
                 OffsetRect(&swatch, 1, 1);
