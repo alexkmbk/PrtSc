@@ -26,6 +26,7 @@ constexpr int kColorButtonId = 3004;
 constexpr int kArrowButtonId = 3005;
 constexpr int kOcrButtonId = 3006;
 constexpr int kTextButtonId = 3007;
+constexpr UINT kTooltipInfoSize = TTTOOLINFOW_V1_SIZE;
 
 bool gIsOcrSupported = false;
 
@@ -222,6 +223,50 @@ void CreateToolbarSeparator(HWND parent, int left)
         nullptr);
 }
 
+HWND CreateToolbarTooltip(HWND parent)
+{
+    HWND tooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr);
+    if (tooltip != nullptr)
+    {
+        SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
+        SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL, 400);
+        SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_RESHOW, 100);
+        SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
+        SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 320);
+        SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    return tooltip;
+}
+
+void AddToolbarTooltip(HWND tooltip, HWND parent, HWND control, const wchar_t* text)
+{
+    if (tooltip == nullptr || control == nullptr)
+    {
+        return;
+    }
+
+    TOOLINFOW toolInfo{};
+    toolInfo.cbSize = kTooltipInfoSize;
+    toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    toolInfo.hwnd = parent;
+    toolInfo.uId = reinterpret_cast<UINT_PTR>(control);
+    toolInfo.lpszText = const_cast<LPWSTR>(text);
+    SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&toolInfo));
+}
+
 LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     switch (message)
@@ -236,34 +281,43 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     case WM_CREATE:
     {
         auto* toolbar = GetToolbar(hwnd);
+        HWND tooltip = CreateToolbarTooltip(hwnd);
         int left = kButtonLeft;
 
-        CreateToolbarButton(hwnd, kCancelButtonId, L"Close", left);
+        HWND closeButton = CreateToolbarButton(hwnd, kCancelButtonId, L"Close", left);
+        AddToolbarTooltip(tooltip, hwnd, closeButton, L"Close capture (Esc)");
         left += kButtonWidth + kButtonGap;
         CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
         left += kSeparatorSpace - kButtonGap;
 
         HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        AddToolbarTooltip(tooltip, hwnd, colorButton, L"Choose annotation color");
         left += kButtonWidth + kButtonGap;
         HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        AddToolbarTooltip(tooltip, hwnd, arrowButton, L"Draw arrow");
         left += kButtonWidth + kButtonGap;
-        CreateToolbarButton(hwnd, kTextButtonId, L"Text", left);
+        HWND textButton = CreateToolbarButton(hwnd, kTextButtonId, L"Text", left);
+        AddToolbarTooltip(tooltip, hwnd, textButton, L"Add text (Ctrl+T)");
         left += kButtonWidth + kButtonGap;
         CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
         left += kSeparatorSpace - kButtonGap;
 
         if (IsOcrSupported())
         {
-            CreateToolbarButton(hwnd, kOcrButtonId, L"OCR", left);
+            HWND ocrButton = CreateToolbarButton(hwnd, kOcrButtonId, L"OCR", left);
+            AddToolbarTooltip(tooltip, hwnd, ocrButton, L"Recognize text to clipboard (Ctrl+O)");
             left += kButtonWidth + kButtonGap;
         }
 
-        CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
+        HWND saveButton = CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
+        AddToolbarTooltip(tooltip, hwnd, saveButton, L"Save selected area (Ctrl+S)");
         left += kButtonWidth + kButtonGap;
-        CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
+        HWND copyButton = CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
+        AddToolbarTooltip(tooltip, hwnd, copyButton, L"Copy selected area (Ctrl+C)");
 
         if (toolbar != nullptr)
         {
+            toolbar->AttachTooltip(tooltip);
             toolbar->AttachArrowButton(arrowButton);
             toolbar->AttachColorButton(colorButton);
         }
@@ -483,6 +537,11 @@ bool RegisterToolbarClass(HINSTANCE instance)
 
 void InitializeCaptureToolbarOcrSupport()
 {
+    INITCOMMONCONTROLSEX commonControls{};
+    commonControls.dwSize = sizeof(commonControls);
+    commonControls.dwICC = ICC_WIN95_CLASSES;
+    InitCommonControlsEx(&commonControls);
+
     gIsOcrSupported = DetectOcrSupport();
 }
 
@@ -530,12 +589,18 @@ bool CaptureToolbar::Show(HWND owner, POINT anchorScreenPosition, COLORREF color
 
 void CaptureToolbar::Hide()
 {
+    if (tooltip_ != nullptr && IsWindow(tooltip_))
+    {
+        DestroyWindow(tooltip_);
+    }
+
     if (hwnd_ != nullptr && IsWindow(hwnd_))
     {
         DestroyWindow(hwnd_);
     }
 
     hwnd_ = nullptr;
+    tooltip_ = nullptr;
     colorButton_ = nullptr;
     arrowButton_ = nullptr;
 }
@@ -553,6 +618,11 @@ void CaptureToolbar::SetColor(COLORREF color)
     }
 }
 
+void CaptureToolbar::AttachTooltip(HWND tooltip)
+{
+    tooltip_ = tooltip;
+}
+
 void CaptureToolbar::AttachColorButton(HWND button)
 {
     colorButton_ = button;
@@ -563,6 +633,11 @@ void CaptureToolbar::AttachArrowButton(HWND button)
 {
     arrowButton_ = button;
     SetColor(color_);
+}
+
+HWND CaptureToolbar::Tooltip() const
+{
+    return tooltip_;
 }
 
 COLORREF CaptureToolbar::Color() const

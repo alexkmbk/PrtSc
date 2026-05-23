@@ -72,7 +72,8 @@ bool SysTrayIcon::HandleMessage(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
 {
     if (message == kTrayIconMessage && wparam == kTrayIconId)
     {
-        if (LOWORD(lparam) == WM_RBUTTONUP || LOWORD(lparam) == WM_CONTEXTMENU)
+        if (LOWORD(lparam) == WM_LBUTTONUP || LOWORD(lparam) == NIN_SELECT || LOWORD(lparam) == WM_RBUTTONUP ||
+            LOWORD(lparam) == WM_CONTEXTMENU)
         {
             ShowContextMenu(hwnd);
             return true;

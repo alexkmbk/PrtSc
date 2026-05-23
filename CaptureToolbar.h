@@ -26,12 +26,15 @@ public:
     bool Show(HWND owner, POINT anchorScreenPosition, COLORREF color);
     void Hide();
     void SetColor(COLORREF color);
+    void AttachTooltip(HWND tooltip);
     void AttachColorButton(HWND button);
     void AttachArrowButton(HWND button);
+    HWND Tooltip() const;
     COLORREF Color() const;
 
 private:
     HWND hwnd_ = nullptr;
+    HWND tooltip_ = nullptr;
     HWND colorButton_ = nullptr;
     HWND arrowButton_ = nullptr;
     COLORREF color_ = RGB(255, 0, 0);
