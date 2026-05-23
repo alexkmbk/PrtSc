@@ -2,18 +2,17 @@
 
 #include <windows.h>
 
-class ArrowAnnotation
+namespace Gdiplus
 {
-public:
-    ArrowAnnotation() = default;
-    ~ArrowAnnotation();
+class Graphics;
+}
 
-    ArrowAnnotation(const ArrowAnnotation&) = delete;
-    ArrowAnnotation& operator=(const ArrowAnnotation&) = delete;
-
-    bool Show(HWND owner, POINT screenStart, POINT screenEnd, COLORREF color);
-    void Hide();
-
-private:
-    HWND hwnd_ = nullptr;
+struct ArrowAnnotation
+{
+    POINT start{};
+    POINT end{};
+    COLORREF color = RGB(255, 0, 0);
 };
+
+void MoveArrow(ArrowAnnotation& arrow, LONG dx, LONG dy);
+void DrawArrow(Gdiplus::Graphics& graphics, const ArrowAnnotation& arrow, int offsetX = 0, int offsetY = 0);

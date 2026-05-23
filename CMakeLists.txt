@@ -6,6 +6,8 @@ project(PrtSc
 )
 
 add_executable(PrtSc WIN32
+    Annotation.cpp
+    Annotation.h
     AppMessages.h
     ArrowAnnotation.cpp
     ArrowAnnotation.h

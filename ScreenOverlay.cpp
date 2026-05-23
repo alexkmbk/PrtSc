@@ -1,11 +1,11 @@
 #include "ScreenOverlay.h"
 
+#include "Annotation.h"
 #include "CaptureToolbar.h"
 #include "OcrEngine.h"
 #include "Settings.h"
 
 #include <algorithm>
-#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -23,9 +23,6 @@ constexpr wchar_t kOverlayClassName[] = L"PrtScScreenOverlay";
 constexpr BYTE kOverlayAlpha = 110;
 constexpr uint32_t kDimPixel = (static_cast<uint32_t>(kOverlayAlpha) << 24);
 constexpr uint32_t kBorderPixel = 0xFFFFFFFF;
-constexpr float kArrowWidth = 4.0F;
-constexpr float kArrowHeadLength = 16.0F;
-constexpr float kArrowHeadAngleRadians = 0.65F;
 constexpr ULONGLONG kRenderThrottleMilliseconds = 16;
 
 enum class SelectionMode
@@ -34,14 +31,6 @@ enum class SelectionMode
     Create,
     Move,
     Arrow,
-};
-
-struct ArrowLine
-{
-    POINT start{};
-    POINT end{};
-    COLORREF color = RGB(255, 0, 0);
-    bool isVisible = true;
 };
 
 struct OverlayState
@@ -73,11 +62,11 @@ struct OverlayState
     RECT selection{};
     RECT previousSelection{};
     CaptureToolbar toolbar{};
-    std::vector<ArrowLine> arrows;
-    std::vector<ArrowLine> previousArrows;
-    ArrowLine previewArrow{};
+    std::vector<AnnotationObject> annotationObjects;
+    std::vector<AnnotationObject> previousAnnotationObjects;
+    ArrowAnnotation previewArrow{};
     COLORREF annotationColor = RGB(255, 0, 0);
-    int currentArrowIndex = -1;
+    int currentAnnotationIndex = -1;
     SelectionMode mode = SelectionMode::None;
     bool isArrowToolActive = false;
     bool hasPreviewArrow = false;
@@ -133,22 +122,9 @@ bool IsCtrlPressed()
     return (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 }
 
-int GetLastVisibleArrowIndex(const std::vector<ArrowLine>& arrows)
+void ResetAnnotationUndoState(OverlayState& state)
 {
-    for (int index = static_cast<int>(arrows.size()) - 1; index >= 0; --index)
-    {
-        if (arrows[static_cast<size_t>(index)].isVisible)
-        {
-            return index;
-        }
-    }
-
-    return -1;
-}
-
-void ResetArrowUndoState(OverlayState& state)
-{
-    state.currentArrowIndex = GetLastVisibleArrowIndex(state.arrows);
+    state.currentAnnotationIndex = GetLastVisibleAnnotationIndex(state.annotationObjects);
 }
 
 LONG ClampLong(LONG value, LONG low, LONG high)
@@ -179,20 +155,6 @@ RECT MoveRectToPoint(const RECT& rect, POINT point, POINT offset, SIZE size)
         left + width,
         top + height,
     };
-}
-
-std::vector<ArrowLine> MoveArrows(const std::vector<ArrowLine>& arrows, LONG dx, LONG dy)
-{
-    std::vector<ArrowLine> movedArrows = arrows;
-    for (ArrowLine& arrow : movedArrows)
-    {
-        arrow.start.x += dx;
-        arrow.start.y += dy;
-        arrow.end.x += dx;
-        arrow.end.y += dy;
-    }
-
-    return movedArrows;
 }
 
 void DrawHorizontalLine(std::vector<uint32_t>& pixels, SIZE size, int y, int left, int right, uint32_t color)
@@ -270,60 +232,6 @@ void DrawSelectionFromScreenshot(std::vector<uint32_t>& pixels, const OverlaySta
     DrawVerticalLine(pixels, state.size, selection.right - 1, selection.top, selection.bottom, kBorderPixel);
 }
 
-Gdiplus::Color ToGdiplusColor(COLORREF color)
-{
-    return Gdiplus::Color(255, GetRValue(color), GetGValue(color), GetBValue(color));
-}
-
-void DrawArrowLine(Gdiplus::Graphics& graphics, const ArrowLine& arrow, int offsetX = 0, int offsetY = 0)
-{
-    const float startX = static_cast<float>(arrow.start.x - offsetX);
-    const float startY = static_cast<float>(arrow.start.y - offsetY);
-    const float endX = static_cast<float>(arrow.end.x - offsetX);
-    const float endY = static_cast<float>(arrow.end.y - offsetY);
-    const float dx = endX - startX;
-    const float dy = endY - startY;
-    const float length = std::sqrt((dx * dx) + (dy * dy));
-    if (length < 2.0F)
-    {
-        return;
-    }
-
-    Gdiplus::Pen pen(ToGdiplusColor(arrow.color), kArrowWidth);
-    pen.SetStartCap(Gdiplus::LineCapRound);
-    pen.SetEndCap(Gdiplus::LineCapRound);
-    graphics.DrawLine(&pen, startX, startY, endX, endY);
-
-    const float angle = std::atan2(dy, dx);
-    const float leftAngle = angle + 3.14159265F - kArrowHeadAngleRadians;
-    const float rightAngle = angle + 3.14159265F + kArrowHeadAngleRadians;
-
-    graphics.DrawLine(
-        &pen,
-        endX,
-        endY,
-        endX + std::cos(leftAngle) * kArrowHeadLength,
-        endY + std::sin(leftAngle) * kArrowHeadLength);
-    graphics.DrawLine(
-        &pen,
-        endX,
-        endY,
-        endX + std::cos(rightAngle) * kArrowHeadLength,
-        endY + std::sin(rightAngle) * kArrowHeadLength);
-}
-
-void DrawArrows(Gdiplus::Graphics& graphics, const std::vector<ArrowLine>& arrows, int offsetX = 0, int offsetY = 0)
-{
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-    for (const ArrowLine& arrow : arrows)
-    {
-        if (arrow.isVisible)
-        {
-            DrawArrowLine(graphics, arrow, offsetX, offsetY);
-        }
-    }
-}
-
 bool EnsureRenderBitmap(OverlayState& state, HDC screenDc)
 {
     if (state.renderBitmap != nullptr && state.renderBitmapBits != nullptr)
@@ -393,10 +301,10 @@ void RenderOverlay(HWND hwnd, OverlayState& state)
         if (state.hasGdiplus)
         {
             Gdiplus::Graphics graphics(memoryDc);
-            DrawArrows(graphics, state.arrows);
+            DrawAnnotations(graphics, state.annotationObjects);
             if (state.hasPreviewArrow)
             {
-                DrawArrowLine(graphics, state.previewArrow);
+                DrawArrow(graphics, state.previewArrow);
             }
         }
 
@@ -532,9 +440,10 @@ bool CaptureScreenSnapshot(OverlayState& state, const RECT& screenRect)
     return true;
 }
 
-void DrawArrowsOnSelectionPixels(const OverlayState& state, SelectionPixels& selectionPixels, int offsetX, int offsetY)
+void DrawAnnotationsOnSelectionPixels(const OverlayState& state, SelectionPixels& selectionPixels, int offsetX, int offsetY)
 {
-    if (state.arrows.empty() || selectionPixels.width <= 0 || selectionPixels.height <= 0 || selectionPixels.pixels.empty())
+    if (state.annotationObjects.empty() || selectionPixels.width <= 0 || selectionPixels.height <= 0 ||
+        selectionPixels.pixels.empty())
     {
         return;
     }
@@ -553,7 +462,7 @@ void DrawArrowsOnSelectionPixels(const OverlayState& state, SelectionPixels& sel
             PixelFormat32bppRGB,
             reinterpret_cast<BYTE*>(selectionPixels.pixels.data()));
         Gdiplus::Graphics graphics(&bitmap);
-        DrawArrows(graphics, state.arrows, offsetX, offsetY);
+        DrawAnnotations(graphics, state.annotationObjects, offsetX, offsetY);
     }
 
     Gdiplus::GdiplusShutdown(gdiplusToken);
@@ -593,7 +502,7 @@ bool GetSelectionPixels(const OverlayState& state, const RECT& screenRect, Selec
             WithoutAlpha);
     }
 
-    DrawArrowsOnSelectionPixels(state, selectionPixels, sourceLeft, sourceTop);
+    DrawAnnotationsOnSelectionPixels(state, selectionPixels, sourceLeft, sourceTop);
     return true;
 }
 
@@ -1035,51 +944,52 @@ void ShowColorPicker(HWND hwnd, OverlayState& state)
     }
 }
 
-bool HideCurrentArrow(OverlayState& state)
+bool HideCurrentAnnotation(OverlayState& state)
 {
-    if (state.currentArrowIndex < 0 || state.currentArrowIndex >= static_cast<int>(state.arrows.size()))
+    if (state.currentAnnotationIndex < 0 ||
+        state.currentAnnotationIndex >= static_cast<int>(state.annotationObjects.size()))
     {
         return false;
     }
 
-    state.arrows[static_cast<size_t>(state.currentArrowIndex)].isVisible = false;
-    ResetArrowUndoState(state);
+    state.annotationObjects[static_cast<size_t>(state.currentAnnotationIndex)].isVisible = false;
+    ResetAnnotationUndoState(state);
     state.hasPreviewArrow = false;
     return true;
 }
 
-bool ShowNextArrow(OverlayState& state)
+bool ShowNextAnnotation(OverlayState& state)
 {
-    const int nextArrowIndex = state.currentArrowIndex + 1;
-    if (nextArrowIndex < 0 || nextArrowIndex >= static_cast<int>(state.arrows.size()))
+    const int nextAnnotationIndex = state.currentAnnotationIndex + 1;
+    if (nextAnnotationIndex < 0 || nextAnnotationIndex >= static_cast<int>(state.annotationObjects.size()))
     {
         return false;
     }
 
-    ArrowLine& arrow = state.arrows[static_cast<size_t>(nextArrowIndex)];
-    if (arrow.isVisible)
+    AnnotationObject& annotationObject = state.annotationObjects[static_cast<size_t>(nextAnnotationIndex)];
+    if (annotationObject.isVisible)
     {
         return false;
     }
 
-    arrow.isVisible = true;
-    state.currentArrowIndex = nextArrowIndex;
+    annotationObject.isVisible = true;
+    state.currentAnnotationIndex = nextAnnotationIndex;
     state.hasPreviewArrow = false;
     return true;
 }
 
-void UndoArrowAndRefresh(HWND hwnd, OverlayState& state)
+void UndoAnnotationAndRefresh(HWND hwnd, OverlayState& state)
 {
-    if (HideCurrentArrow(state))
+    if (HideCurrentAnnotation(state))
     {
         RenderOverlay(hwnd, state);
         ShowToolbarForSelection(hwnd, state);
     }
 }
 
-void RedoArrowAndRefresh(HWND hwnd, OverlayState& state)
+void RedoAnnotationAndRefresh(HWND hwnd, OverlayState& state)
 {
-    if (ShowNextArrow(state))
+    if (ShowNextAnnotation(state))
     {
         RenderOverlay(hwnd, state);
         ShowToolbarForSelection(hwnd, state);
@@ -1113,17 +1023,17 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
         }
         return 0;
 
-    case kCaptureToolbarUndoArrowMessage:
+    case kCaptureToolbarUndoAnnotationMessage:
         if (state != nullptr)
         {
-            UndoArrowAndRefresh(hwnd, *state);
+            UndoAnnotationAndRefresh(hwnd, *state);
         }
         return 0;
 
-    case kCaptureToolbarRedoArrowMessage:
+    case kCaptureToolbarRedoAnnotationMessage:
         if (state != nullptr)
         {
-            RedoArrowAndRefresh(hwnd, *state);
+            RedoAnnotationAndRefresh(hwnd, *state);
         }
         return 0;
 
@@ -1172,12 +1082,12 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             }
             if (wparam == 'Z')
             {
-                UndoArrowAndRefresh(hwnd, *state);
+                UndoAnnotationAndRefresh(hwnd, *state);
                 return 0;
             }
             if (wparam == 'Y')
             {
-                RedoArrowAndRefresh(hwnd, *state);
+                RedoAnnotationAndRefresh(hwnd, *state);
                 return 0;
             }
         }
@@ -1199,7 +1109,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->isDragging = false;
             state->dragStart = point;
             state->previousSelection = state->selection;
-            state->previousArrows = state->arrows;
+            state->previousAnnotationObjects = state->annotationObjects;
             state->hasPreviewArrow = false;
             state->toolbar.Hide();
 
@@ -1228,8 +1138,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             else
             {
                 state->mode = SelectionMode::Create;
-                state->arrows.clear();
-                ResetArrowUndoState(*state);
+                state->annotationObjects.clear();
+                ResetAnnotationUndoState(*state);
             }
         }
         return 0;
@@ -1253,8 +1163,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             {
                 state->isDragging = true;
                 state->selection = MoveRectToPoint(state->previousSelection, current, state->moveOffset, state->size);
-                state->arrows = MoveArrows(
-                    state->previousArrows,
+                state->annotationObjects = MoveAnnotations(
+                    state->previousAnnotationObjects,
                     state->selection.left - state->previousSelection.left,
                     state->selection.top - state->previousSelection.top);
                 RenderOverlayThrottled(hwnd, *state);
@@ -1286,7 +1196,7 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             const bool wasDragging = state->isDragging;
             const bool wasDrawingArrow = state->mode == SelectionMode::Arrow;
             const bool hadPreviewArrow = state->hasPreviewArrow;
-            const ArrowLine completedArrow = state->previewArrow;
+            const ArrowAnnotation completedArrow = state->previewArrow;
 
             if (GetCapture() == hwnd)
             {
@@ -1296,8 +1206,8 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             if (!wasDragging)
             {
                 state->selection = state->previousSelection;
-                state->arrows = state->previousArrows;
-                ResetArrowUndoState(*state);
+                state->annotationObjects = state->previousAnnotationObjects;
+                ResetAnnotationUndoState(*state);
                 state->hasSelection = IsRectVisible(state->selection);
                 state->hasPreviewArrow = false;
                 RenderOverlay(hwnd, *state);
@@ -1311,17 +1221,17 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                 state->hasSelection = IsRectVisible(state->selection);
                 if (wasDrawingArrow && hadPreviewArrow)
                 {
-                    state->arrows.erase(
+                    state->annotationObjects.erase(
                         std::remove_if(
-                            state->arrows.begin(),
-                            state->arrows.end(),
-                            [](const ArrowLine& arrow)
+                            state->annotationObjects.begin(),
+                            state->annotationObjects.end(),
+                            [](const AnnotationObject& annotationObject)
                             {
-                                return !arrow.isVisible;
+                                return !annotationObject.isVisible;
                             }),
-                        state->arrows.end());
-                    state->arrows.push_back(completedArrow);
-                    ResetArrowUndoState(*state);
+                        state->annotationObjects.end());
+                    state->annotationObjects.push_back({completedArrow});
+                    ResetAnnotationUndoState(*state);
                     state->hasPreviewArrow = false;
                 }
                 RenderOverlay(hwnd, *state);
