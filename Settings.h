@@ -15,9 +15,6 @@ public:
     const std::wstring& ScreenshotHotkey() const;
     void SetScreenshotHotkey(std::wstring hotkey);
 
-    bool RunAtSystemStartup() const;
-    void SetRunAtSystemStartup(bool enabled);
-
     COLORREF AnnotationColor() const;
     void SetAnnotationColor(COLORREF color);
 
@@ -30,7 +27,6 @@ private:
     static const std::filesystem::path settingsFilePath_;
 
     std::wstring screenshotHotkey_ = L"Ctrl+PrtScr";
-    bool runAtSystemStartup_ = false;
     COLORREF annotationColor_ = RGB(255, 0, 0);
     std::filesystem::path lastSaveDirectory_;
 };

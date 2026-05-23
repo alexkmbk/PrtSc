@@ -137,8 +137,6 @@ void Settings::Load()
         screenshotHotkey_ = hotkey;
     }
 
-    runAtSystemStartup_ = ini.GetBoolValue("General", "RunAtSystemStartup", false);
-
     COLORREF color = annotationColor_;
     if (TryParseColor(ini.GetValue("Annotation", "Color", ""), color))
     {
@@ -159,7 +157,6 @@ void Settings::Save() const
 
     CSimpleIniA ini;
     ini.SetUnicode();
-    ini.SetBoolValue("General", "RunAtSystemStartup", runAtSystemStartup_);
     ini.SetValue("Hotkeys", "Screenshot", WideToUtf8(screenshotHotkey_).c_str());
     ini.SetValue("Annotation", "Color", ColorToString(annotationColor_).c_str());
     ini.SetValue("Save", "LastDirectory", WideToUtf8(lastSaveDirectory_.wstring()).c_str());
@@ -174,16 +171,6 @@ const std::wstring& Settings::ScreenshotHotkey() const
 void Settings::SetScreenshotHotkey(std::wstring hotkey)
 {
     screenshotHotkey_ = std::move(hotkey);
-}
-
-bool Settings::RunAtSystemStartup() const
-{
-    return runAtSystemStartup_;
-}
-
-void Settings::SetRunAtSystemStartup(bool enabled)
-{
-    runAtSystemStartup_ = enabled;
 }
 
 COLORREF Settings::AnnotationColor() const

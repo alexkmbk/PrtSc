@@ -1,7 +1,6 @@
 #include "SettingsDialog.h"
 
 #include "Settings.h"
-#include "StartupManager.h"
 
 #include <array>
 #include <string>
@@ -11,7 +10,6 @@ namespace
 {
 constexpr wchar_t kSettingsDialogClassName[] = L"PrtScSettingsDialog";
 constexpr int kEditHotkeyId = 2001;
-constexpr int kRunAtStartupCheckboxId = 2002;
 constexpr int kButtonOkId = IDOK;
 constexpr int kButtonCancelId = IDCANCEL;
 constexpr int kBaseDpi = 96;
@@ -19,9 +17,7 @@ constexpr int kBaseDpi = 96;
 struct DialogState
 {
     HWND editHotkey = nullptr;
-    HWND runAtStartupCheckbox = nullptr;
     WNDPROC originalEditProc = nullptr;
-    bool canManageStartup = false;
     bool accepted = false;
     bool closed = false;
 };
@@ -266,17 +262,14 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
     {
         auto* state = reinterpret_cast<DialogState*>(reinterpret_cast<LPCREATESTRUCTW>(lparam)->lpCreateParams);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
-        state->canManageStartup = IsStartupManagementAvailable();
 
         const int margin = ScaleForDpi(hwnd, 22);
         const int labelTop = ScaleForDpi(hwnd, 22);
         const int editTop = ScaleForDpi(hwnd, 54);
-        const int checkboxTop = ScaleForDpi(hwnd, 98);
-        const int buttonTop = ScaleForDpi(hwnd, 145);
+        const int buttonTop = ScaleForDpi(hwnd, 102);
         const int editWidth = ScaleForDpi(hwnd, 390);
         const int labelHeight = ScaleForDpi(hwnd, 22);
         const int editHeight = ScaleForDpi(hwnd, 30);
-        const int checkboxHeight = ScaleForDpi(hwnd, 26);
         const int buttonWidth = ScaleForDpi(hwnd, 96);
         const int buttonHeight = ScaleForDpi(hwnd, 34);
         const int buttonGap = ScaleForDpi(hwnd, 10);
@@ -313,27 +306,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
         SetWindowLongPtrW(state->editHotkey, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
         state->originalEditProc = reinterpret_cast<WNDPROC>(
             SetWindowLongPtrW(state->editHotkey, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(HotkeyEditProc)));
-
-        state->runAtStartupCheckbox = CreateWindowExW(
-            0,
-            L"BUTTON",
-            L"Run at system startup",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-            margin,
-            checkboxTop,
-            editWidth,
-            checkboxHeight,
-            hwnd,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(kRunAtStartupCheckboxId)),
-            nullptr,
-            nullptr);
-        ApplyDefaultFont(state->runAtStartupCheckbox);
-        SendMessageW(
-            state->runAtStartupCheckbox,
-            BM_SETCHECK,
-            state->canManageStartup && IsRunAtSystemStartupEnabled() ? BST_CHECKED : BST_UNCHECKED,
-            0);
-        EnableWindow(state->runAtStartupCheckbox, state->canManageStartup ? TRUE : FALSE);
 
         HWND okButton = CreateWindowExW(
             0,
@@ -379,15 +351,6 @@ LRESULT CALLBACK SettingsDialogProc(HWND hwnd, UINT message, WPARAM wparam, LPAR
             if (state != nullptr)
             {
                 Settings::Instance().SetScreenshotHotkey(GetWindowTextValue(state->editHotkey));
-                if (state->canManageStartup)
-                {
-                    const bool runAtStartup =
-                        SendMessageW(state->runAtStartupCheckbox, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                    if (SetRunAtSystemStartup(runAtStartup))
-                    {
-                        Settings::Instance().SetRunAtSystemStartup(runAtStartup);
-                    }
-                }
                 Settings::Instance().Save();
             }
 
@@ -455,7 +418,7 @@ bool ShowSettingsDialog(HWND owner)
     DialogState state;
     const UINT dpi = GetWindowDpi(owner);
     const int dialogWidth = MulDiv(460, static_cast<int>(dpi), kBaseDpi);
-    const int dialogHeight = MulDiv(250, static_cast<int>(dpi), kBaseDpi);
+    const int dialogHeight = MulDiv(205, static_cast<int>(dpi), kBaseDpi);
     HWND dialog = CreateWindowExW(
         WS_EX_DLGMODALFRAME,
         kSettingsDialogClassName,
