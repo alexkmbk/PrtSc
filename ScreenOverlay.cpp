@@ -78,7 +78,6 @@ struct OverlayState
     ArrowLine previewArrow{};
     COLORREF annotationColor = RGB(255, 0, 0);
     int currentArrowIndex = -1;
-    int previousArrowIndex = -1;
     SelectionMode mode = SelectionMode::None;
     bool isArrowToolActive = false;
     bool hasPreviewArrow = false;
@@ -874,7 +873,9 @@ bool ShowSavePngDialog(std::filesystem::path& selectedPath)
     openFileName.nMaxFile = static_cast<DWORD>(sizeof(filePath) / sizeof(filePath[0]));
     openFileName.lpstrInitialDir = initialDirectoryText.c_str();
     openFileName.lpstrDefExt = L"png";
-    openFileName.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    openFileName.Flags =
+        OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR |
+        OFN_NOTESTFILECREATE | OFN_NODEREFERENCELINKS;
 
     if (GetSaveFileNameW(&openFileName) == FALSE)
     {
@@ -962,14 +963,17 @@ void SaveSelectionToFileAndClose(HWND hwnd, OverlayState& state)
     state.toolbar.Hide();
     ShowWindow(hwnd, SW_HIDE);
 
+    std::filesystem::path selectedPath;
+    if (!ShowSavePngDialog(selectedPath))
+    {
+        DestroyWindow(hwnd);
+        return;
+    }
+
     SelectionPixels selectionPixels;
     if (GetSelectionPixels(state, screenRect, selectionPixels))
     {
-        std::filesystem::path selectedPath;
-        if (ShowSavePngDialog(selectedPath))
-        {
-            SaveSelectionPixelsAsPng(selectionPixels, selectedPath);
-        }
+        SaveSelectionPixelsAsPng(selectionPixels, selectedPath);
     }
 
     DestroyWindow(hwnd);
@@ -1196,7 +1200,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             state->dragStart = point;
             state->previousSelection = state->selection;
             state->previousArrows = state->arrows;
-            state->previousArrowIndex = state->currentArrowIndex;
             state->hasPreviewArrow = false;
             state->toolbar.Hide();
 
@@ -1254,7 +1257,6 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
                     state->previousArrows,
                     state->selection.left - state->previousSelection.left,
                     state->selection.top - state->previousSelection.top);
-                state->currentArrowIndex = state->previousArrowIndex;
                 RenderOverlayThrottled(hwnd, *state);
             }
             else if (state->mode == SelectionMode::Create)
@@ -1295,10 +1297,14 @@ LRESULT CALLBACK OverlayProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             {
                 state->selection = state->previousSelection;
                 state->arrows = state->previousArrows;
-                state->currentArrowIndex = state->previousArrowIndex;
+                ResetArrowUndoState(*state);
                 state->hasSelection = IsRectVisible(state->selection);
                 state->hasPreviewArrow = false;
                 RenderOverlay(hwnd, *state);
+                if (state->hasSelection)
+                {
+                    ShowToolbarForSelection(hwnd, *state);
+                }
             }
             else
             {

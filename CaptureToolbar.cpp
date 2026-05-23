@@ -6,15 +6,19 @@
 namespace
 {
 constexpr wchar_t kToolbarClassName[] = L"PrtScCaptureToolbar";
-constexpr int kToolbarWidthWithoutOcr = 573;
-constexpr int kToolbarWidthWithOcr = 685;
 constexpr int kToolbarHeight = 58;
 constexpr int kToolbarMargin = 8;
 constexpr int kButtonWidth = 104;
 constexpr int kButtonHeight = 36;
 constexpr int kButtonTop = 10;
 constexpr int kButtonLeft = 12;
+constexpr int kButtonRight = kButtonLeft;
 constexpr int kButtonGap = 8;
+constexpr int kSeparatorWidth = 1;
+constexpr int kSeparatorHeight = 32;
+constexpr int kSeparatorTop = 13;
+constexpr int kSeparatorGap = 14;
+constexpr int kSeparatorSpace = (kSeparatorGap * 2) + kSeparatorWidth;
 constexpr int kCopyButtonId = 3001;
 constexpr int kSaveButtonId = 3002;
 constexpr int kCancelButtonId = 3003;
@@ -36,13 +40,20 @@ void ApplyDefaultFont(HWND hwnd)
 
 bool IsOcrSupported();
 
+int GetToolbarWidth()
+{
+    const int buttonCount = IsOcrSupported() ? 6 : 5;
+    return kButtonLeft + kButtonRight + (buttonCount * kButtonWidth) + ((buttonCount - 3) * kButtonGap) +
+        (2 * kSeparatorSpace);
+}
+
 void PlaceBelowSelection(HWND hwnd, POINT anchor)
 {
     const int screenLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int screenTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int screenRight = screenLeft + GetSystemMetrics(SM_CXVIRTUALSCREEN);
     const int screenBottom = screenTop + GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    const int toolbarWidth = IsOcrSupported() ? kToolbarWidthWithOcr : kToolbarWidthWithoutOcr;
+    const int toolbarWidth = GetToolbarWidth();
 
     int x = anchor.x - toolbarWidth;
     int y = anchor.y + kToolbarMargin;
@@ -188,6 +199,23 @@ HWND CreateToolbarButton(
     return button;
 }
 
+void CreateToolbarSeparator(HWND parent, int left)
+{
+    CreateWindowExW(
+        0,
+        L"STATIC",
+        nullptr,
+        WS_CHILD | WS_VISIBLE | SS_ETCHEDVERT,
+        left,
+        kSeparatorTop,
+        kSeparatorWidth,
+        kSeparatorHeight,
+        parent,
+        nullptr,
+        nullptr,
+        nullptr);
+}
+
 LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     switch (message)
@@ -203,10 +231,18 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
     {
         auto* toolbar = GetToolbar(hwnd);
         int left = kButtonLeft;
-        CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
+
+        CreateToolbarButton(hwnd, kCancelButtonId, L"Close", left);
         left += kButtonWidth + kButtonGap;
-        CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
+        CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
+        left += kSeparatorSpace - kButtonGap;
+
+        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
         left += kButtonWidth + kButtonGap;
+        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        left += kButtonWidth + kButtonGap;
+        CreateToolbarSeparator(hwnd, left + kSeparatorGap - kButtonGap);
+        left += kSeparatorSpace - kButtonGap;
 
         if (IsOcrSupported())
         {
@@ -214,11 +250,9 @@ LRESULT CALLBACK ToolbarProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpar
             left += kButtonWidth + kButtonGap;
         }
 
-        HWND arrowButton = CreateToolbarButton(hwnd, kArrowButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
+        CreateToolbarButton(hwnd, kSaveButtonId, L"Save", left);
         left += kButtonWidth + kButtonGap;
-        HWND colorButton = CreateToolbarButton(hwnd, kColorButtonId, L"", left, kButtonWidth, BS_OWNERDRAW);
-        left += kButtonWidth + kButtonGap;
-        CreateToolbarButton(hwnd, kCancelButtonId, L"Cancel", left);
+        CreateToolbarButton(hwnd, kCopyButtonId, L"Copy", left);
 
         if (toolbar != nullptr)
         {
@@ -456,7 +490,7 @@ bool CaptureToolbar::Show(HWND owner, POINT anchorScreenPosition, COLORREF color
             WS_POPUP | WS_BORDER,
             anchorScreenPosition.x,
             anchorScreenPosition.y,
-            IsOcrSupported() ? kToolbarWidthWithOcr : kToolbarWidthWithoutOcr,
+            GetToolbarWidth(),
             kToolbarHeight,
             owner,
             nullptr,

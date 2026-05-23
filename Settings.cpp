@@ -77,6 +77,13 @@ bool TryParseColor(const char* value, COLORREF& color)
 
 std::filesystem::path GetLocalAppDataPath()
 {
+    wchar_t buffer[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
+    if (length > 0 && length < std::size(buffer))
+    {
+        return buffer;
+    }
+
     PWSTR localAppData = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &localAppData)) &&
         localAppData != nullptr)
@@ -84,13 +91,6 @@ std::filesystem::path GetLocalAppDataPath()
         std::filesystem::path path = localAppData;
         CoTaskMemFree(localAppData);
         return path;
-    }
-
-    wchar_t buffer[MAX_PATH]{};
-    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer, static_cast<DWORD>(std::size(buffer)));
-    if (length > 0 && length < std::size(buffer))
-    {
-        return buffer;
     }
 
     const DWORD userProfileLength =
